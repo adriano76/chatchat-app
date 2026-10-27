@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Permissions -->
+    <!-- Permissões de Rede e Hardware -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -24,12 +24,13 @@
             android:launchMode="singleTask"
             android:exported="true">
 
+            <!-- Ponto de entrada padrão da App -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- REGRA NOVA: Captura o redirecionamento do Supabase (Google/Facebook) de volta para a App -->
+            <!-- REGRA 1 (Custom Scheme): Captura o redirecionamento oficial do Supabase/Capacitor -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -37,8 +38,17 @@
                 <data android:scheme="chatchat" android:host="login-callback" />
             </intent-filter>
 
+            <!-- REGRA 2 (App Link): Interceta o site do Vercel caso o navegador tente abrir a versão Web -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="chatchat-app-tau.vercel.app" />
+            </intent-filter>
+
         </activity>
 
+        <!-- Provedor de Ficheiros (Necessário para a Câmera/Galeria) -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

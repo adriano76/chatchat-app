@@ -18,21 +18,15 @@ export default function AuthPage() {
   // Estado para controlar a visibilidade da senha
   const [showPassword, setShowPassword] = useState(false);
 
-  // Deteta se está na App (Capacitor) ou no Site (Vercel) para usar o redirecionamento correto
-  const getRedirectUrl = () => {
-    if (typeof window !== 'undefined') {
-      const isMobileApp = window.location.origin.includes('localhost') || window.location.origin.includes('capacitor');
-      return isMobileApp ? 'chatchat://login-callback' : `${window.location.origin}/`;
-    }
-    return 'chatchat://login-callback';
-  };
+  // URL exata do seu projeto para o Deep Link funcionar tanto no Android quanto na Web
+  const SITE_URL = 'https://chatchat-app-tau.vercel.app/';
 
   // --- FUNÇÃO: LOGIN COM GOOGLE ---
   async function handleGoogleLogin() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: getRedirectUrl(),
+        redirectTo: SITE_URL,
       }
     });
     
@@ -41,12 +35,12 @@ export default function AuthPage() {
     }
   }
 
-  // --- NOVA FUNÇÃO: LOGIN COM FACEBOOK ---
+  // --- FUNÇÃO: LOGIN COM FACEBOOK ---
   async function handleFacebookLogin() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'facebook',
       options: {
-        redirectTo: getRedirectUrl(),
+        redirectTo: SITE_URL,
       }
     });
     
@@ -61,13 +55,13 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
-    // Limpa espaços invisíveis e maiúsculas automáticas do teclado do telemóvel
+    // CORREÇÃO: Limpa espaços invisíveis e maiúsculas automáticas do teclado do telemóvel
     const cleanEmail = email.trim().toLowerCase();
 
     try {
       if (isSignUp) {
         // Cadastro
-        const { data, error } = await supabase.auth.signUp({
+        const { error } = await supabase.auth.signUp({
           email: cleanEmail,
           password,
           options: {
