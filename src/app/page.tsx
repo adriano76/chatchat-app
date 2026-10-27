@@ -1,9 +1,12 @@
-// Caminho: src/app/chat/page.tsx
+// Caminho: src/app/page.tsx
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Virtuoso } from 'react-virtuoso';
+
+// Botão deslogar integrado com sucesso!
+import LogoutButton from '@/components/LogoutButton';
 
 // Hooks Nativos da Arquitetura ChatChat
 import { useCamera } from '@/hooks/useCamera';
@@ -3171,6 +3174,10 @@ export default function ChatHub() {
                     fontSize="text-xs"
                   />
                 </button>
+                
+                {/* BOTÃO DE SAÍDA (LOGOUT) ADICIONADO AQUI */}
+                <LogoutButton />
+                
               </div>
             </div>
           </header>
