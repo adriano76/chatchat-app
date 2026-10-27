@@ -16,28 +16,29 @@ export default function AuthPage() {
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   
-  // ESTADO CRUCIAL: Define se estamos na App Nativa ou na Web
+  // Estado para detetar o ambiente
   const [isMobileApp, setIsMobileApp] = useState(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      // 1. Tenta detetar automaticamente se está a correr no Android
-      const ua = navigator.userAgent || '';
-      const isApp = ua.includes('wv') || window.location.origin.includes('capacitor') || window.location.origin.includes('localhost');
-      if (isApp) setIsMobileApp(true);
+      // Deteção super agressiva do Capacitor no Android/iOS
+      const cap = (window as any).Capacitor;
+      const isNative = cap && (cap.isNativePlatform?.() || cap.isNative);
+      
+      if (isNative) {
+        setIsMobileApp(true);
+      }
 
-      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor
+      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor para agarrar o login
       import('@capacitor/app').then(({ App }) => {
         App.addListener('appUrlOpen', (event) => {
           // Quando o Google devolve o link chatchat://login-callback#access_token=...
           if (event.url.includes('#access_token=')) {
-            // Extrai o hash de segurança e aplica na janela da App
             const hash = event.url.substring(event.url.indexOf('#'));
             window.location.hash = hash; 
             
-            setMessage({ type: 'success', text: 'Autenticação recebida da App! A iniciar...' });
+            setMessage({ type: 'success', text: 'Sessão autorizada! A iniciar ChatChat...' });
             
-            // Aguarda 1 segundo para o Supabase processar e entra na aplicação
             setTimeout(() => {
               router.push('/');
               router.refresh();
@@ -45,14 +46,23 @@ export default function AuthPage() {
           }
         });
       }).catch(() => {
-        // Ignora se estiver a correr no navegador Web normal do PC
+        // Ignora erros na Web
       });
     }
   }, [router]);
 
-  // Se a caixa estiver marcada (isMobileApp = true), obriga o uso do chatchat:// para fechar o Chrome
+  // Função blindada que decide qual URL enviar para o Supabase
   const getRedirectUrl = () => {
-    return isMobileApp ? 'chatchat://login-callback' : 'https://chatchat-app-tau.vercel.app/';
+    if (typeof window !== 'undefined') {
+      const cap = (window as any).Capacitor;
+      const isNativeNow = cap && (cap.isNativePlatform?.() || cap.isNative);
+      
+      // Se detetar nativamente OU a checkbox estiver marcada, força a abertura da App!
+      if (isNativeNow || isMobileApp) {
+        return 'chatchat://login-callback';
+      }
+    }
+    return 'https://chatchat-app-tau.vercel.app/';
   };
 
   // --- FUNÇÃO: LOGIN COM GOOGLE ---
@@ -91,7 +101,7 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
-    // CORREÇÃO: Limpa espaços invisíveis e maiúsculas do teclado Android
+    // Limpa espaços invisíveis e forca minúsculas
     const cleanEmail = email.trim().toLowerCase();
 
     try {
@@ -257,7 +267,7 @@ export default function AuthPage() {
           )}
         </div>
 
-        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo */}
+        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo caso a deteção falhe */}
         <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
           <input 
             type="checkbox" 
@@ -267,7 +277,7 @@ export default function AuthPage() {
             className="accent-emerald-500 w-4 h-4 cursor-pointer"
           />
           <label htmlFor="forceApp" className="cursor-pointer font-medium hover:text-neutral-300 transition">
-            Modo App Nativa (Ative se estiver no Telemóvel)
+            Modo App Nativa (Ative para forçar retorno do Google)
           </label>
         </div>
 
