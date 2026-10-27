@@ -14,31 +14,50 @@ export default function AuthPage() {
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
-  
-  // Estado para controlar a visibilidade da senha
   const [showPassword, setShowPassword] = useState(false);
   
-  // Estado para detetar o ambiente (Telemóvel Nativo vs Web)
+  // ESTADO CRUCIAL: Define se estamos na App Nativa ou na Web
   const [isMobileApp, setIsMobileApp] = useState(false);
 
-  // Deteta se está a correr no telemóvel (Capacitor) ou na Web (Vercel)
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const isCapacitor = 
-        window.location.origin.includes('capacitor') || 
-        window.location.origin.includes('localhost') || 
-        (window as any).Capacitor !== undefined;
-      setIsMobileApp(isCapacitor);
-    }
-  }, []);
+      // 1. Tenta detetar automaticamente se está a correr no Android
+      const ua = navigator.userAgent || '';
+      const isApp = ua.includes('wv') || window.location.origin.includes('capacitor') || window.location.origin.includes('localhost');
+      if (isApp) setIsMobileApp(true);
 
-  // Define o URL de redirecionamento com base no ambiente detetado
+      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor
+      import('@capacitor/app').then(({ App }) => {
+        App.addListener('appUrlOpen', (event) => {
+          // Quando o Google devolve o link chatchat://login-callback#access_token=...
+          if (event.url.includes('#access_token=')) {
+            // Extrai o hash de segurança e aplica na janela da App
+            const hash = event.url.substring(event.url.indexOf('#'));
+            window.location.hash = hash; 
+            
+            setMessage({ type: 'success', text: 'Autenticação recebida da App! A iniciar...' });
+            
+            // Aguarda 1 segundo para o Supabase processar e entra na aplicação
+            setTimeout(() => {
+              router.push('/');
+              router.refresh();
+            }, 1000);
+          }
+        });
+      }).catch(() => {
+        // Ignora se estiver a correr no navegador Web normal do PC
+      });
+    }
+  }, [router]);
+
+  // Se a caixa estiver marcada (isMobileApp = true), obriga o uso do chatchat:// para fechar o Chrome
   const getRedirectUrl = () => {
     return isMobileApp ? 'chatchat://login-callback' : 'https://chatchat-app-tau.vercel.app/';
   };
 
   // --- FUNÇÃO: LOGIN COM GOOGLE ---
   async function handleGoogleLogin() {
+    setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -53,6 +72,7 @@ export default function AuthPage() {
 
   // --- FUNÇÃO: LOGIN COM FACEBOOK ---
   async function handleFacebookLogin() {
+    setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'facebook',
       options: {
@@ -71,12 +91,11 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
-    // CORREÇÃO: Limpa espaços invisíveis e maiúsculas automáticas do teclado do telemóvel
+    // CORREÇÃO: Limpa espaços invisíveis e maiúsculas do teclado Android
     const cleanEmail = email.trim().toLowerCase();
 
     try {
       if (isSignUp) {
-        // Cadastro
         const { error } = await supabase.auth.signUp({
           email: cleanEmail,
           password,
@@ -87,23 +106,15 @@ export default function AuthPage() {
             },
           },
         });
-
         if (error) throw error;
-
-        setMessage({
-          type: 'success',
-          text: 'Cadastro realizado com sucesso! Você já pode entrar.',
-        });
+        setMessage({ type: 'success', text: 'Cadastro realizado com sucesso! Você já pode entrar.' });
         setIsSignUp(false);
       } else {
-        // Login
         const { error } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
           password,
         });
-
         if (error) throw error;
-
         router.push('/');
         router.refresh();
       }
@@ -143,7 +154,6 @@ export default function AuthPage() {
           </div>
         )}
 
-        {/* --- BOTÕES DE LOGIN SOCIAL --- */}
         <div className="space-y-3 mb-6">
           <button
             onClick={handleGoogleLogin}
@@ -171,14 +181,12 @@ export default function AuthPage() {
           </button>
         </div>
 
-        {/* DIVISOR ESTILIZADO */}
         <div className="flex items-center gap-4 mb-6">
           <div className="h-px bg-neutral-800 flex-1"></div>
           <span className="text-xs text-neutral-500 font-bold uppercase tracking-widest">ou</span>
           <div className="h-px bg-neutral-800 flex-1"></div>
         </div>
 
-        {/* --- FORMULÁRIO TRADICIONAL --- */}
         <form onSubmit={handleSubmit} className="space-y-4">
           {isSignUp && (
             <div>
@@ -222,20 +230,11 @@ export default function AuthPage() {
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-1/2 transform -translate-y-1/2 text-neutral-400 hover:text-neutral-200 transition-colors"
-                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
               >
                 {showPassword ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
-                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
-                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
-                    <line x1="2" y1="2" x2="22" y2="22"/>
-                  </svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
                 ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
-                  </svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                 )}
               </button>
             </div>
@@ -252,35 +251,26 @@ export default function AuthPage() {
 
         <div className="mt-6 text-center text-xs text-neutral-400">
           {isSignUp ? (
-            <p>
-              Já possui uma conta?{' '}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSignUp(false);
-                  setMessage(null);
-                }}
-                className="text-emerald-400 hover:underline font-semibold"
-              >
-                Entrar
-              </button>
-            </p>
+            <p>Já possui uma conta? <button type="button" onClick={() => { setIsSignUp(false); setMessage(null); }} className="text-emerald-400 hover:underline font-semibold">Entrar</button></p>
           ) : (
-            <p>
-              Não tem uma conta?{' '}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSignUp(true);
-                  setMessage(null);
-                }}
-                className="text-emerald-400 hover:underline font-semibold"
-              >
-                Cadastre-se gratuitamente
-              </button>
-            </p>
+            <p>Não tem uma conta? <button type="button" onClick={() => { setIsSignUp(true); setMessage(null); }} className="text-emerald-400 hover:underline font-semibold">Cadastre-se gratuitamente</button></p>
           )}
         </div>
+
+        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo */}
+        <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
+          <input 
+            type="checkbox" 
+            id="forceApp" 
+            checked={isMobileApp} 
+            onChange={(e) => setIsMobileApp(e.target.checked)} 
+            className="accent-emerald-500 w-4 h-4 cursor-pointer"
+          />
+          <label htmlFor="forceApp" className="cursor-pointer font-medium hover:text-neutral-300 transition">
+            Modo App Nativa (Ative se estiver no Telemóvel)
+          </label>
+        </div>
+
       </div>
     </main>
   );
