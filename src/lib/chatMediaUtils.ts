@@ -9,16 +9,18 @@ import {
 import type { ImageMetadata, ChatMessage } from '@/app/types/chat';
 
 /**
- * Restrições de Áudio HD (48.000 Hz) com Cancelamento de Eco (Anti-Microfonia),
- * Supressão de Ruído e Controle Automático de Ganho.
+ * Restrições de Áudio HD (48.000 Hz) ajustadas para Mobile.
+ * Cancelamento de Eco (Anti-Microfonia) LIGADO, 
+ * Supressão de Ruído e Controle Automático de Ganho DESLIGADOS
+ * para evitar voz robótica/abafada no sistema Android.
  */
 export const HD_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
   sampleRate: { ideal: 48000 },
   sampleSize: { ideal: 16 },
   channelCount: { ideal: 1 },
   echoCancellation: { ideal: true },
-  noiseSuppression: { ideal: true },
-  autoGainControl: { ideal: true }
+  noiseSuppression: false, // <-- Desligado para evitar distorção da voz no Android
+  autoGainControl: false   // <-- Desligado para evitar flutuações forçadas de volume
 };
 
 export const getStatusDisplay = (status?: string) => {
