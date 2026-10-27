@@ -1,7 +1,7 @@
 // Caminho: src/app/login/page.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -17,16 +17,32 @@ export default function AuthPage() {
   
   // Estado para controlar a visibilidade da senha
   const [showPassword, setShowPassword] = useState(false);
+  
+  // Estado para detetar o ambiente (Telemóvel Nativo vs Web)
+  const [isMobileApp, setIsMobileApp] = useState(false);
 
-  // URL exata do seu projeto para o Deep Link funcionar tanto no Android quanto na Web
-  const SITE_URL = 'https://chatchat-app-tau.vercel.app/';
+  // Deteta se está a correr no telemóvel (Capacitor) ou na Web (Vercel)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const isCapacitor = 
+        window.location.origin.includes('capacitor') || 
+        window.location.origin.includes('localhost') || 
+        (window as any).Capacitor !== undefined;
+      setIsMobileApp(isCapacitor);
+    }
+  }, []);
+
+  // Define o URL de redirecionamento com base no ambiente detetado
+  const getRedirectUrl = () => {
+    return isMobileApp ? 'chatchat://login-callback' : 'https://chatchat-app-tau.vercel.app/';
+  };
 
   // --- FUNÇÃO: LOGIN COM GOOGLE ---
   async function handleGoogleLogin() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: SITE_URL,
+        redirectTo: getRedirectUrl(),
       }
     });
     
@@ -40,7 +56,7 @@ export default function AuthPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'facebook',
       options: {
-        redirectTo: SITE_URL,
+        redirectTo: getRedirectUrl(),
       }
     });
     
