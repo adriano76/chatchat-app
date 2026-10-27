@@ -1,4 +1,3 @@
-// src/hooks/useLiveCall.ts
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -55,7 +54,7 @@ export function useLiveCall(currentUser: any, contacts: any[]) {
   useEffect(() => { callStatusRef.current = callStatus; }, [callStatus]);
   useEffect(() => { contactsRef.current = contacts; }, [contacts]);
 
-  // Captura de mídia com filtros DSP de voz e fallback para compatibilidade mobile universal
+  // Captura de mídia com filtros ajustados para evitar voz robótica/distorcida no Android
   const getOptimizedMediaStream = useCallback(async (withVideo: boolean): Promise<MediaStream> => {
     try {
       return await navigator.mediaDevices.getUserMedia({
@@ -68,18 +67,22 @@ export function useLiveCall(currentUser: any, contacts: any[]) {
             }
           : false,
         audio: {
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
+          echoCancellation: true,
+          noiseSuppression: false, // <-- Desliga o filtro nativo que causa distorção
+          autoGainControl: false,  // <-- Desliga a variação de volume indesejada
           sampleRate: { ideal: 48000 },
           channelCount: { ideal: 1 }
         }
       });
     } catch {
-      // Fallback caso o hardware do telemóvel rejeite constraints avançadas
+      // Fallback seguro aplicando as mesmas regras anti-distorção
       return await navigator.mediaDevices.getUserMedia({
         video: withVideo,
-        audio: true
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
       });
     }
   }, []);
@@ -385,7 +388,7 @@ export function useLiveCall(currentUser: any, contacts: any[]) {
     remoteStream,
     isVideoCall,
     isSpeakerphoneOn,
-     toggleSpeakerphone,
+    toggleSpeakerphone,
     startCall,
     acceptCall,
     rejectCall,

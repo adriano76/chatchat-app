@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ChatChat</string>
+    <string name="title_activity_main">ChatChat</string>
+    <string name="package_name">com.adriano.chatchat</string>
+    <string name="custom_url_scheme">com.adriano.chatchat</string>
+</resources>
