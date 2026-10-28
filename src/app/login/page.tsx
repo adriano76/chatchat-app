@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { App as CapacitorApp } from '@capacitor/app';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -15,6 +16,40 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  
+  // --- OUVINTE DO CAPACITOR: RECEBE O LOGIN DO GOOGLE E FACEBOOK ---
+  useEffect(() => {
+    const setupListener = async () => {
+      await CapacitorApp.addListener('appUrlOpen', (event) => {
+        const url = new URL(event.url);
+        // Se a app foi aberta pelo login social, o link trará um "#access_token=..."
+        if (event.url.includes('login-callback') && url.hash) {
+          // Passamos esse token para a janela atual para o Supabase o ler e fazer o login!
+          window.location.hash = url.hash;
+        }
+      });
+    };
+    setupListener();
+  }, []);
+
+  // --- NOVA FUNÇÃO: RECUPERAR SENHA ---
+  async function handleResetPassword() {
+    if (!email) {
+      setMessage({ type: 'error', text: 'Por favor, digite o seu e-mail no campo acima primeiro.' });
+      return;
+    }
+    setLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'chatchat://reset-callback',
+    });
+    
+    if (error) {
+      setMessage({ type: 'error', text: 'Erro: ' + error.message });
+    } else {
+      setMessage({ type: 'success', text: 'E-mail de recuperação enviado! Verifique a sua caixa de entrada.' });
+    }
+    setLoading(false);
+  }
   
   // Estado para detetar o ambiente
   const [isMobileApp, setIsMobileApp] = useState(false);
@@ -253,6 +288,19 @@ export default function AuthPage() {
             </div>
           </div>
 
+          {/* O BOTÃO "ESQUECEU A SENHA" ESTÁ AGORA AQUI, NO LUGAR CORRETO */}
+          {!isSignUp && (
+            <div className="flex justify-end mt-1">
+              <button
+                type="button"
+                onClick={handleResetPassword}
+                className="text-xs text-emerald-500 hover:text-emerald-400 font-semibold"
+              >
+                Esqueceu a senha?
+              </button>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
@@ -270,7 +318,7 @@ export default function AuthPage() {
           )}
         </div>
 
-        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo caso a deteção falhe */}
+        {/* OVERRIDE MANUAL */}
         <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
           <input 
             type="checkbox" 
