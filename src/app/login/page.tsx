@@ -15,6 +15,8 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  
+  // Estado para detetar o ambiente
   const [isMobileApp, setIsMobileApp] = useState(false);
 
   // --- NOVA FUNÇÃO: RECUPERAR SENHA ---
@@ -31,14 +33,14 @@ export default function AuthPage() {
     if (error) {
       setMessage({ type: 'error', text: 'Erro: ' + error.message });
     } else {
-      setMessage({ type: 'success', text: 'E-mail de recuperação enviado! Verifique a sua caixa de entrada.' });
+      setMessage({ type: 'success', text: 'E-mail de recuperação enviado! Verifique a sua caixa.' });
     }
     setLoading(false);
   }
-  
-  // --- OUVINTE PRINCIPAL (RESOLVE O PROBLEMA DO GOOGLE) ---
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      // Deteção super agressiva do Capacitor no Android/iOS
       const cap = (window as any).Capacitor;
       const isNative = cap && (cap.isNativePlatform?.() || cap.isNative);
       
@@ -46,49 +48,51 @@ export default function AuthPage() {
         setIsMobileApp(true);
       }
 
-      // Injeta a Ponte Nativa (Bridge) do Capacitor para agarrar o login
+      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor para agarrar o login
       import('@capacitor/app').then(({ App }) => {
         App.addListener('appUrlOpen', async (event) => {
           
-          // Quando o Google devolve o utilizador para a aplicação
           if (event.url.includes('login-callback')) {
-            
-            // NOVO: Padrão PKCE (Sistema de segurança atual do Supabase)
-            if (event.url.includes('?code=')) {
-              const urlObj = new URL(event.url);
-              const code = urlObj.searchParams.get('code');
-              if (code) {
-                // Troca o código secreto pela sessão oficial!
-                await supabase.auth.exchangeCodeForSession(code);
+            try {
+              // NOVO PADRÃO DE SEGURANÇA (PKCE)
+              if (event.url.includes('?code=')) {
+                const urlObj = new URL(event.url);
+                const code = urlObj.searchParams.get('code');
+                if (code) {
+                  const { error } = await supabase.auth.exchangeCodeForSession(code);
+                  if (error) throw error;
+                }
+              } 
+              // PADRÃO ANTIGO (Mantido como redundância)
+              else if (event.url.includes('#access_token=')) {
+                const hash = event.url.substring(event.url.indexOf('#'));
+                window.location.hash = hash; 
               }
-            } 
-            // ANTIGO: Padrão Hash (Apenas por segurança, caso seja usado)
-            else if (event.url.includes('#access_token=')) {
-              const hash = event.url.substring(event.url.indexOf('#'));
-              window.location.hash = hash; 
+              
+              setMessage({ type: 'success', text: 'Sessão autorizada! A iniciar ChatChat...' });
+              
+              setTimeout(() => {
+                router.push('/');
+                router.refresh();
+              }, 1000);
+            } catch (err: any) {
+              setMessage({ type: 'error', text: 'Falha no login: ' + err.message });
             }
-            
-            setMessage({ type: 'success', text: 'Sessão autorizada! A iniciar ChatChat...' });
-            
-            setTimeout(() => {
-              router.push('/');
-              router.refresh();
-            }, 1000);
           }
         });
       }).catch(() => {
-        // Ignora erros caso o utilizador esteja no PC (Web)
+        // Ignora erros na Web
       });
     }
   }, [router]);
 
-  // Função que decide qual URL enviar para o Supabase (Nativo vs Web)
+  // Função blindada que decide qual URL enviar para o Supabase
   const getRedirectUrl = () => {
     if (typeof window !== 'undefined') {
       const cap = (window as any).Capacitor;
       const isNativeNow = cap && (cap.isNativePlatform?.() || cap.isNative);
       
-      // Se estiver no telemóvel, força o deep link
+      // Se detetar nativamente OU a checkbox estiver marcada, força a abertura da App!
       if (isNativeNow || isMobileApp) {
         return 'chatchat://login-callback';
       }
@@ -132,6 +136,7 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
+    // Limpa espaços invisíveis e forca minúsculas
     const cleanEmail = email.trim().toLowerCase();
 
     try {
@@ -309,6 +314,7 @@ export default function AuthPage() {
           )}
         </div>
 
+        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo caso a deteção falhe */}
         <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
           <input 
             type="checkbox" 
