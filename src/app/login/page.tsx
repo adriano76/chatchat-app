@@ -1,11 +1,9 @@
-// Caminho: src/app/login/page.tsx
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { App as CapacitorApp } from '@capacitor/app';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -15,102 +13,17 @@ export default function AuthPage() {
   const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  
+  // Estado para controlar a visibilidade da senha
   const [showPassword, setShowPassword] = useState(false);
-  
-  // --- OUVINTE DO CAPACITOR: RECEBE O LOGIN DO GOOGLE E FACEBOOK ---
-  useEffect(() => {
-    const setupListener = async () => {
-      await CapacitorApp.addListener('appUrlOpen', (event) => {
-        const url = new URL(event.url);
-        // Se a app foi aberta pelo login social, o link trará um "#access_token=..."
-        if (event.url.includes('login-callback') && url.hash) {
-          // Passamos esse token para a janela atual para o Supabase o ler e fazer o login!
-          window.location.hash = url.hash;
-        }
-      });
-    };
-    setupListener();
-  }, []);
 
-  // --- NOVA FUNÇÃO: RECUPERAR SENHA ---
-  async function handleResetPassword() {
-    if (!email) {
-      setMessage({ type: 'error', text: 'Por favor, digite o seu e-mail no campo acima primeiro.' });
-      return;
-    }
-    setLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: 'chatchat://reset-callback',
-    });
-    
-    if (error) {
-      setMessage({ type: 'error', text: 'Erro: ' + error.message });
-    } else {
-      setMessage({ type: 'success', text: 'E-mail de recuperação enviado! Verifique a sua caixa de entrada.' });
-    }
-    setLoading(false);
-  }
-  
-  // Estado para detetar o ambiente
-  const [isMobileApp, setIsMobileApp] = useState(false);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      // Deteção super agressiva do Capacitor no Android/iOS
-      const cap = (window as any).Capacitor;
-      const isNative = cap && (cap.isNativePlatform?.() || cap.isNative);
-      
-      if (isNative) {
-        setIsMobileApp(true);
-      }
-
-      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor para agarrar o login
-      import('@capacitor/app').then(({ App }) => {
-        App.addListener('appUrlOpen', (event) => {
-          // Quando o Google devolve o link chatchat://login-callback#access_token=...
-          if (event.url.includes('#access_token=')) {
-            const hash = event.url.substring(event.url.indexOf('#'));
-            window.location.hash = hash; 
-            
-            setMessage({ type: 'success', text: 'Sessão autorizada! A iniciar ChatChat...' });
-            
-            setTimeout(() => {
-              router.push('/');
-              router.refresh();
-            }, 1000);
-          }
-        });
-      }).catch(() => {
-        // Ignora erros na Web
-      });
-    }
-  }, [router]);
-
-  // Função blindada que decide qual URL enviar para o Supabase
-  const getRedirectUrl = () => {
-    if (typeof window !== 'undefined') {
-      const cap = (window as any).Capacitor;
-      const isNativeNow = cap && (cap.isNativePlatform?.() || cap.isNative);
-      
-      // Se detetar nativamente OU a checkbox estiver marcada, força a abertura da App!
-      if (isNativeNow || isMobileApp) {
-        return 'chatchat://login-callback';
-      }
-    }
-    return 'https://chatchat-app-tau.vercel.app/';
-  };
-
-// --- FUNÇÃO: LOGIN COM GOOGLE ---
+  // --- FUNÇÃO: LOGIN COM GOOGLE ---
   async function handleGoogleLogin() {
-    setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        // Se a checkbox "Modo App Nativa" não estiver a funcionar automaticamente, 
-        // substitua a variável getRedirectUrl() por esta string fixa para testar no APK:
-        redirectTo: 'chatchat://login-callback',
+        redirectTo: `${window.location.origin}/`,
       }
-      
     });
     
     if (error) {
@@ -118,13 +31,12 @@ export default function AuthPage() {
     }
   }
 
-  // --- FUNÇÃO: LOGIN COM FACEBOOK ---
+  // --- NOVA FUNÇÃO: LOGIN COM FACEBOOK ---
   async function handleFacebookLogin() {
-    setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'facebook',
       options: {
-        redirectTo: getRedirectUrl(),
+        redirectTo: `${window.location.origin}/`,
       }
     });
     
@@ -139,13 +51,11 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
-    // Limpa espaços invisíveis e forca minúsculas
-    const cleanEmail = email.trim().toLowerCase();
-
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email: cleanEmail,
+        // Cadastro
+        const { data, error } = await supabase.auth.signUp({
+          email,
           password,
           options: {
             data: {
@@ -154,15 +64,23 @@ export default function AuthPage() {
             },
           },
         });
+
         if (error) throw error;
-        setMessage({ type: 'success', text: 'Cadastro realizado com sucesso! Você já pode entrar.' });
+
+        setMessage({
+          type: 'success',
+          text: 'Cadastro realizado com sucesso! Você já pode entrar.',
+        });
         setIsSignUp(false);
       } else {
+        // Login
         const { error } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
+          email,
           password,
         });
+
         if (error) throw error;
+
         router.push('/');
         router.refresh();
       }
@@ -178,15 +96,15 @@ export default function AuthPage() {
       <div className="w-full max-w-md bg-neutral-900 border border-neutral-800 p-8 rounded-2xl shadow-xl">
         <div className="text-center mb-6">
           <Link href="/" className="text-2xl font-bold text-emerald-500 hover:text-emerald-400 transition">
-            ChatChat
+            Repot
           </Link>
           <h2 className="text-xl font-bold mt-2">
-            {isSignUp ? 'Criar sua conta' : 'Entrar no ChatChat'}
+            {isSignUp ? 'Criar sua conta' : 'Entrar no Repot'}
           </h2>
           <p className="text-xs text-neutral-400 mt-1">
             {isSignUp
-              ? 'Cadastre-se para se conectar de forma rápida e segura.'
-              : 'Entre para conversar com a sua rede de contactos.'}
+              ? 'Cadastre-se para criar discussões, responder e votar.'
+              : 'Entre para interagir com a comunidade.'}
           </p>
         </div>
 
@@ -202,6 +120,7 @@ export default function AuthPage() {
           </div>
         )}
 
+        {/* --- BOTÕES DE LOGIN SOCIAL --- */}
         <div className="space-y-3 mb-6">
           <button
             onClick={handleGoogleLogin}
@@ -229,12 +148,14 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {/* DIVISOR ESTILIZADO */}
         <div className="flex items-center gap-4 mb-6">
           <div className="h-px bg-neutral-800 flex-1"></div>
           <span className="text-xs text-neutral-500 font-bold uppercase tracking-widest">ou</span>
           <div className="h-px bg-neutral-800 flex-1"></div>
         </div>
 
+        {/* --- FORMULÁRIO TRADICIONAL --- */}
         <form onSubmit={handleSubmit} className="space-y-4">
           {isSignUp && (
             <div>
@@ -278,28 +199,24 @@ export default function AuthPage() {
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-1/2 transform -translate-y-1/2 text-neutral-400 hover:text-neutral-200 transition-colors"
+                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
               >
                 {showPassword ? (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
+                    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
+                    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
+                    <line x1="2" y1="2" x2="22" y2="22"/>
+                  </svg>
                 ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
                 )}
               </button>
             </div>
           </div>
-
-          {/* O BOTÃO "ESQUECEU A SENHA" ESTÁ AGORA AQUI, NO LUGAR CORRETO */}
-          {!isSignUp && (
-            <div className="flex justify-end mt-1">
-              <button
-                type="button"
-                onClick={handleResetPassword}
-                className="text-xs text-emerald-500 hover:text-emerald-400 font-semibold"
-              >
-                Esqueceu a senha?
-              </button>
-            </div>
-          )}
 
           <button
             type="submit"
@@ -312,26 +229,35 @@ export default function AuthPage() {
 
         <div className="mt-6 text-center text-xs text-neutral-400">
           {isSignUp ? (
-            <p>Já possui uma conta? <button type="button" onClick={() => { setIsSignUp(false); setMessage(null); }} className="text-emerald-400 hover:underline font-semibold">Entrar</button></p>
+            <p>
+              Já possui uma conta?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUp(false);
+                  setMessage(null);
+                }}
+                className="text-emerald-400 hover:underline font-semibold"
+              >
+                Entrar
+              </button>
+            </p>
           ) : (
-            <p>Não tem uma conta? <button type="button" onClick={() => { setIsSignUp(true); setMessage(null); }} className="text-emerald-400 hover:underline font-semibold">Cadastre-se gratuitamente</button></p>
+            <p>
+              Não tem uma conta?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUp(true);
+                  setMessage(null);
+                }}
+                className="text-emerald-400 hover:underline font-semibold"
+              >
+                Cadastre-se gratuitamente
+              </button>
+            </p>
           )}
         </div>
-
-        {/* OVERRIDE MANUAL */}
-        <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
-          <input 
-            type="checkbox" 
-            id="forceApp" 
-            checked={isMobileApp} 
-            onChange={(e) => setIsMobileApp(e.target.checked)} 
-            className="accent-emerald-500 w-4 h-4 cursor-pointer"
-          />
-          <label htmlFor="forceApp" className="cursor-pointer font-medium hover:text-neutral-300 transition">
-            Modo App Nativa (Ative para forçar retorno do Google)
-          </label>
-        </div>
-
       </div>
     </main>
   );
