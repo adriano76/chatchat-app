@@ -65,14 +65,17 @@ export default function AuthPage() {
     return 'https://chatchat-app-tau.vercel.app/';
   };
 
-  // --- FUNÇÃO: LOGIN COM GOOGLE ---
+// --- FUNÇÃO: LOGIN COM GOOGLE ---
   async function handleGoogleLogin() {
     setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: getRedirectUrl(),
+        // Se a checkbox "Modo App Nativa" não estiver a funcionar automaticamente, 
+        // substitua a variável getRedirectUrl() por esta string fixa para testar no APK:
+        redirectTo: 'chatchat://login-callback',
       }
+      
     });
     
     if (error) {
