@@ -8,6 +8,16 @@ import { Virtuoso } from 'react-virtuoso';
 // Botão deslogar integrado com sucesso!
 import LogoutButton from '@/components/LogoutButton';
 
+// Utilitários de Perfil e @arroba (Parte 1)
+import {
+  generateCleanHandle,
+  getPublicHandle,
+  getDisplayNameByTab
+} from '@/utils/profileUtils';
+
+// Modal de Contactos com Agenda do Telemóvel (Parte 4)
+import { AddContactModal } from '@/components/contacts/AddContactModal';
+
 // Hooks Nativos da Arquitetura ChatChat
 import { useCamera } from '@/hooks/useCamera';
 import { useLocalVault } from '@/hooks/useLocalVault';
@@ -92,10 +102,14 @@ export type { UserProfile, SavedContact, ImageMetadata, ChatMessage };
 
 // ============================================================================
 // CODIFICADOR DE METADADOS DA PÁGINA GLOBAL NA TABELA PÚBLICA PROFILES
-// Garante que qualquer outra conta veja os dados da Página Global em tempo real,
-// ocultando os metadados completamente na aba de Meus Contactos.
 // ============================================================================
 const GP_STATUS_MARKER = '||__GP__:';
+
+const isInvalidTextValue = (val?: string | null): boolean => {
+  if (!val) return true;
+  const trimmed = val.trim().toLowerCase();
+  return trimmed === '' || trimmed === 'undefined' || trimmed === '@undefined' || trimmed === 'null';
+};
 
 const extractCleanPresenceStatus = (rawStatus?: string | null): string => {
   if (!rawStatus) return 'Online';
@@ -109,7 +123,6 @@ const encodeStatusWithGlobalPage = (
   cfg: GlobalPageConfig
 ): string => {
   const baseStatus = extractCleanPresenceStatus(rawStatus);
-  // O avatar já fica salvo em profiles.avatar_url; evitamos duplicar Base64 longo no campo status
   const compactAvatar =
     cfg.avatar_url && !cfg.avatar_url.startsWith('data:') ? cfg.avatar_url : null;
   const compactConfig: GlobalPageConfig = {
@@ -131,12 +144,21 @@ const decodeGlobalPageFromProfileRow = (
   try {
     const parsed = JSON.parse(jsonPart) as GlobalPageConfig;
     if (!parsed || !parsed.userId) return null;
+
+    const fallbackTitle = getDisplayNameByTab(profileRow, 'global');
+    const cleanTitle = !isInvalidTextValue(parsed.title) ? parsed.title : fallbackTitle;
+    const rawHandleCandidate = !isInvalidTextValue(parsed.handle)
+      ? parsed.handle
+      : !isInvalidTextValue(parsed.title)
+      ? parsed.title
+      : getPublicHandle(profileRow);
+
     return {
       ...parsed,
       userId: String(parsed.userId),
-      title: parsed.title || profileRow.username || 'Página Global',
+      title: cleanTitle,
       avatar_url: parsed.avatar_url || profileRow.avatar_url || null,
-      handle: formatPageHandle(parsed.handle || parsed.title || profileRow.username || 'pagina'),
+      handle: formatPageHandle(rawHandleCandidate),
       hashtags: parsed.hashtags || '',
       bio_link: parsed.bio_link || '',
       approvedUserIds: Array.isArray(parsed.approvedUserIds) ? parsed.approvedUserIds.map(String) : [],
@@ -187,7 +209,7 @@ export default function ChatHub() {
   const deletedContactIdsRef = useRef<string[]>([]);
   const blockedByUserIdsRef = useRef<string[]>([]);
 
-  // Estados de Foto de Perfil e Páginas Globais (Pública/Privada, Solicitações, +18, Bio Link)
+  // Estados de Foto de Perfil e Páginas Globais
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
   const [isUpdatingAvatar, setIsUpdatingAvatar] = useState<boolean>(false);
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
@@ -277,7 +299,6 @@ export default function ChatHub() {
     globalPageConfigsRef.current = globalPageConfigs;
   }, [globalPageConfigs]);
 
-  // Se o utilizador aberto na conversa bloquear o utilizador atual, fecha o painel em tempo real
   useEffect(() => {
     if (selectedContact?.id && blockedByUserIds.includes(String(selectedContact.id))) {
       setSelectedContact(null);
@@ -285,14 +306,25 @@ export default function ChatHub() {
     }
   }, [blockedByUserIds, selectedContact?.id, setSelectedContact, setMessages]);
 
-  // Carrega configurações salvas das Páginas Globais e confirmações +18 locais
+  // Carrega configurações salvas das Páginas Globais higienizando qualquer @undefined antigo
   useEffect(() => {
     try {
       const rawPages = localStorage.getItem(GLOBAL_PAGES_STORAGE_KEY);
       if (rawPages) {
-        const parsed = JSON.parse(rawPages);
-        globalPageConfigsRef.current = parsed;
-        setGlobalPageConfigs(parsed);
+        const parsed = JSON.parse(rawPages) as Record<string, GlobalPageConfig>;
+        const cleaned: Record<string, GlobalPageConfig> = {};
+        Object.entries(parsed).forEach(([k, v]) => {
+          if (!v) return;
+          cleaned[k] = {
+            ...v,
+            title: isInvalidTextValue(v.title) ? 'Página Global' : v.title,
+            handle: isInvalidTextValue(v.handle)
+              ? `@${generateCleanHandle(v.title !== 'undefined' ? v.title : 'pagina')}`
+              : v.handle
+          };
+        });
+        globalPageConfigsRef.current = cleaned;
+        setGlobalPageConfigs(cleaned);
       }
       const rawAdultOk = sessionStorage.getItem('chatchat_verified_adult_pages');
       if (rawAdultOk) {
@@ -301,7 +333,7 @@ export default function ChatHub() {
     } catch {}
   }, []);
 
-  // Extrai configurações de Páginas Globais diretamente de globalProfiles assim que carregam
+  // Extrai configurações de Páginas Globais diretamente de globalProfiles
   useEffect(() => {
     if (!globalProfiles || globalProfiles.length === 0) return;
     setGlobalPageConfigs((prev: Record<string, GlobalPageConfig>) => {
@@ -312,7 +344,6 @@ export default function ChatHub() {
         if (decoded) {
           const uid = String(decoded.userId);
           const existing = next[uid];
-          // Preserva solicitações pendentes locais que ainda não tenham sido processadas
           const mergedPending = existing?.pendingRequests?.length
             ? existing.pendingRequests.filter(
                 (req: GlobalPageAccessRequest) =>
@@ -376,7 +407,7 @@ export default function ChatHub() {
     return () => window.removeEventListener('click', closeMenu);
   }, [openContactMenuId]);
 
-  // Carrega a foto de perfil do utilizador atual e sincroniza automaticamente a Página Global local com a tabela profiles
+  // Carrega a foto de perfil do utilizador atual, garante que não existe @undefined e sincroniza a Página Global
   useEffect(() => {
     if (!currentUser?.id) return;
     const myId = String(currentUser.id);
@@ -390,11 +421,27 @@ export default function ChatHub() {
 
     const fetchMyLatestAvatarAndSyncPage = async () => {
       try {
+        const { data: authData } = await supabase.auth.getUser();
+        const authUser = authData?.user;
+        const googleName = authUser?.user_metadata?.full_name || authUser?.user_metadata?.name || '';
+        const cleanAutoHandle = generateCleanHandle(
+          !isInvalidTextValue(currentUser.username) ? currentUser.username : googleName,
+          currentUser.email || authUser?.email
+        );
+
         const { data } = await supabase
           .from('profiles')
           .select('id, username, avatar_url, status')
           .eq('id', myId)
           .maybeSingle();
+
+        // Se o username no banco ainda estiver vazio ou 'undefined', grava automaticamente o handle limpo
+        if (data && isInvalidTextValue(data.username)) {
+          await supabase
+            .from('profiles')
+            .update({ username: cleanAutoHandle, updated_at: new Date().toISOString() })
+            .eq('id', myId);
+        }
 
         if (data?.avatar_url) {
           setMyAvatarUrl(data.avatar_url);
@@ -416,7 +463,6 @@ export default function ChatHub() {
             return next;
           });
         } else if (localPageCfg && !hasAutoPublishedMyPageRef.current) {
-          // Se o utilizador já configurou a página localmente (como na Imagem 1), publica na tabela profiles automaticamente
           hasAutoPublishedMyPageRef.current = true;
           const encodedStatus = encodeStatusWithGlobalPage(data?.status, localPageCfg);
           await supabase
@@ -430,7 +476,7 @@ export default function ChatHub() {
       } catch {}
     };
     fetchMyLatestAvatarAndSyncPage();
-  }, [currentUser?.id, currentUser?.avatar_url]);
+  }, [currentUser?.id, currentUser?.username, currentUser?.email, currentUser?.avatar_url]);
 
   // Propaga novas fotos de perfil de globalProfiles para os contactos salvos
   useEffect(() => {
@@ -510,15 +556,23 @@ export default function ChatHub() {
           return;
         }
         const existing = map.get(cid);
-        const profileEmail = (item.profile as any)?.email || existing?.email;
+        const globalOrig = globalProfiles.find((p: UserProfile) => String(p.id) === cid);
+        const profileEmail = (item.profile as any)?.email || existing?.email || globalOrig?.email;
+
+        // Mantém sempre o username original da Rede Global separado do savedName privado
+        const preservedGlobalUsername =
+          (!isInvalidTextValue(globalOrig?.username) ? globalOrig?.username : null) ||
+          (!isInvalidTextValue(item.profile?.username) ? item.profile.username : null) ||
+          (!isInvalidTextValue(existing?.username) ? existing?.username : null) ||
+          generateCleanHandle(item.profile?.displayName, profileEmail);
 
         map.set(cid, {
           id: cid,
-          username: item.profile.username || item.profile.displayName || existing?.username || 'Desconhecido',
+          username: preservedGlobalUsername,
           email: profileEmail,
-          avatar_url: item.profile.avatarUrl ?? existing?.avatar_url ?? null,
-          status: extractCleanPresenceStatus(existing?.status || 'Online'),
-          savedName: resolveDisplayName(item) || existing?.savedName || 'Desconhecido',
+          avatar_url: item.profile.avatarUrl ?? existing?.avatar_url ?? globalOrig?.avatar_url ?? null,
+          status: extractCleanPresenceStatus(existing?.status || globalOrig?.status || 'Online'),
+          savedName: resolveDisplayName(item) || existing?.savedName || preservedGlobalUsername,
           address: existing?.address || '',
           phone: existing?.phone || '',
           addedAt: item.updatedAt || existing?.addedAt || new Date().toISOString()
@@ -532,7 +586,7 @@ export default function ChatHub() {
       } catch {}
       return merged;
     });
-  }, [cleanRoomContacts, currentUser?.id, setMySavedContacts]);
+  }, [cleanRoomContacts, currentUser?.id, globalProfiles, setMySavedContacts]);
 
   const handleAvatarUploadChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -593,17 +647,20 @@ export default function ChatHub() {
     if (!currentUser?.id) return;
     const myId = String(currentUser.id);
     const existing = globalPageConfigsRef.current[myId];
+    const cleanDefaultTitle = getDisplayNameByTab(currentUser, 'global');
+    const cleanDefaultHandle = getPublicHandle(currentUser);
+
     setGlobalPageForm({
-      title: existing?.title || currentUser.username || '',
+      title: !isInvalidTextValue(existing?.title) ? existing!.title : cleanDefaultTitle,
       description: existing?.description || '',
       avatar_url: existing?.avatar_url || myAvatarUrl || currentUser.avatar_url || null,
       visibility: existing?.visibility || 'public',
-      handle: existing?.handle || formatPageHandle(currentUser.username || ''),
+      handle: !isInvalidTextValue(existing?.handle) ? existing!.handle : cleanDefaultHandle,
       hashtags: existing?.hashtags || '',
       bio_link: existing?.bio_link || '',
       is_adult: Boolean(existing?.is_adult)
     });
-  }, [currentUser?.id, currentUser?.username, currentUser?.avatar_url, myAvatarUrl]);
+  }, [currentUser, myAvatarUrl]);
 
   const handleOpenGlobalPageEditor = useCallback(() => {
     setTargetUserToAdd(null);
@@ -612,7 +669,7 @@ export default function ChatHub() {
     setShowAddContactModal(true);
   }, [populateGlobalPageFormForCurrentUser]);
 
-  // Publica a configuração da Página Global na tabela pública profiles (status codificado) e notifica em private_messages
+  // Publica a configuração da Página Global na tabela pública profiles (status codificado)
   const publishGlobalPageConfigToSupabase = useCallback(async (myId: string, configToPublish: GlobalPageConfig) => {
     try {
       const encodedStatus = encodeStatusWithGlobalPage(currentUser?.status, configToPublish);
@@ -736,7 +793,7 @@ export default function ChatHub() {
 
     const requestObj: GlobalPageAccessRequest = {
       requesterId: myId,
-      requesterName: currentUser.username || 'Utilizador',
+      requesterName: getDisplayNameByTab(currentUser, 'global'),
       requesterAvatar: myAvatarUrl || currentUser.avatar_url || null,
       requestedAt: new Date().toISOString()
     };
@@ -744,11 +801,11 @@ export default function ChatHub() {
     setGlobalPageConfigs((prev: Record<string, GlobalPageConfig>) => {
       const existing: GlobalPageConfig = prev[targetId] || {
         userId: targetId,
-        title: targetProfile.username || 'Página Privada',
+        title: getDisplayNameByTab(targetProfile, 'global'),
         description: '',
         avatar_url: targetProfile.avatar_url || null,
         visibility: 'private',
-        handle: `@${targetProfile.username || 'pagina'}`,
+        handle: getPublicHandle(targetProfile),
         hashtags: '',
         bio_link: '',
         is_adult: false,
@@ -805,11 +862,11 @@ export default function ChatHub() {
 
     const existing: GlobalPageConfig = globalPageConfigsRef.current[myId] || {
       userId: myId,
-      title: currentUser.username || 'Minha Página',
+      title: getDisplayNameByTab(currentUser, 'global'),
       description: '',
       avatar_url: myAvatarUrl || currentUser.avatar_url || null,
       visibility: 'private',
-      handle: formatPageHandle(currentUser.username || 'pagina'),
+      handle: getPublicHandle(currentUser),
       hashtags: '',
       bio_link: '',
       is_adult: false,
@@ -850,7 +907,6 @@ export default function ChatHub() {
       return next;
     });
 
-    // Remove o sinal de pedido pendente no banco de dados
     try {
       const { data: reqSignals } = await supabase
         .from('private_messages')
@@ -869,7 +925,6 @@ export default function ChatHub() {
       }
     } catch {}
 
-    // Envia confirmação direta para a conta que solicitou (passa pelo RLS porque receiver_id = reqId)
     try {
       await supabase.from('private_messages').insert([
         {
@@ -884,7 +939,6 @@ export default function ChatHub() {
         }
       ]);
 
-      // Se foi Aceito, partilha também as postagens globais existentes da página para que a outra conta as veja
       if (accept) {
         const { data: myGlobalPosts } = await supabase
           .from('private_messages')
@@ -1032,11 +1086,26 @@ export default function ChatHub() {
 
   const handleOpenAddContact = useCallback((user: UserProfile) => {
     if (blockedByUserIdsRef.current.includes(String(user.id))) return;
-    setTargetUserToAdd(user);
+    // Busca sempre o perfil global original para preservar o username e o @ da Página Global
+    const originalGlobal =
+      globalProfiles.find((p: UserProfile) => String(p.id) === String(user.id)) || user;
+    const pageCfg = globalPageConfigsRef.current[String(user.id)];
+    const defaultCustomName =
+      pageCfg?.title || getDisplayNameByTab(originalGlobal, 'global');
+
+    setTargetUserToAdd({
+      ...originalGlobal,
+      username: originalGlobal.username || defaultCustomName
+    });
     setAddModalTab('contact');
-    setContactForm({ search: '', customName: user.username, address: '', phone: '' });
+    setContactForm({
+      search: '',
+      customName: defaultCustomName,
+      address: '',
+      phone: ''
+    });
     setShowAddContactModal(true);
-  }, []);
+  }, [globalProfiles]);
 
   const handleOpenGenericAddContact = useCallback(() => {
     setTargetUserToAdd(null);
@@ -1053,7 +1122,7 @@ export default function ChatHub() {
     if (isPhoneTypedInSearchBar(val)) return;
 
     const cleanSearch = val.includes('@')
-      ? val.replace(/\s+/g, '').toLowerCase()
+      ? val.replace(/^@/, '').replace(/\s+/g, '').toLowerCase()
       : val.trim().toLowerCase();
     if (!cleanSearch) return;
 
@@ -1061,10 +1130,15 @@ export default function ChatHub() {
       (p: UserProfile) =>
         !blockedByUserIdsRef.current.includes(String(p.id)) &&
         (p.username?.toLowerCase() === cleanSearch ||
+          globalPageConfigsRef.current[String(p.id)]?.handle?.replace(/^@/, '').toLowerCase() === cleanSearch ||
           p.email?.replace(/\s+/g, '').toLowerCase() === cleanSearch)
     );
     if (match) {
-      setContactForm((prev: ContactFormState) => ({ ...prev, customName: prev.customName || match.username }));
+      const suggestedName = getDisplayNameByTab(match, 'global');
+      setContactForm((prev: ContactFormState) => ({
+        ...prev,
+        customName: prev.customName || suggestedName
+      }));
     }
   }, [globalProfiles]);
 
@@ -1073,6 +1147,62 @@ export default function ChatHub() {
     const sanitizedPhone = rawVal.replace(/[^0-9+()\-\s]/g, '');
     setContactForm((prev: ContactFormState) => ({ ...prev, phone: sanitizedPhone }));
   }, []);
+
+  // Importação em lote quando o utilizador seleciona múltiplos contactos da Agenda do Telemóvel
+  const handleImportMultipleFromPhone = useCallback((pickedContacts: { name: string; phone: string; email?: string }[]) => {
+    if (!pickedContacts || pickedContacts.length === 0) return;
+
+    setMySavedContacts((prev: SavedContact[]) => {
+      const nextList = [...prev];
+
+      pickedContacts.forEach((item, idx) => {
+        const cleanPhone = normalizePhoneKey(item.phone);
+        const cleanEmail = normalizeEmailKey(item.email || '');
+
+        const matchedGlobal = globalProfiles.find((p: UserProfile) => {
+          const pEmail = normalizeEmailKey(p.email || '');
+          return cleanEmail && pEmail && pEmail === cleanEmail;
+        });
+
+        const contactId = matchedGlobal?.id
+          ? String(matchedGlobal.id)
+          : `offline-${Date.now()}-${idx}`;
+
+        const globalUsername = matchedGlobal?.username
+          ? matchedGlobal.username
+          : generateCleanHandle(item.name, item.email);
+
+        const newEntry: SavedContact = {
+          id: contactId,
+          // Preserva o username técnico/global separado do savedName da agenda
+          username: globalUsername,
+          email: cleanEmail || matchedGlobal?.email || undefined,
+          avatar_url: matchedGlobal?.avatar_url || null,
+          status: extractCleanPresenceStatus(matchedGlobal?.status || (matchedGlobal ? 'Online' : 'Offline')),
+          savedName: item.name?.trim() || globalUsername,
+          address: '',
+          phone: item.phone || (cleanPhone ? item.phone : ''),
+          addedAt: new Date().toISOString()
+        };
+
+        const existingIndex = nextList.findIndex((c) => String(c.id) === contactId);
+        if (existingIndex >= 0) {
+          nextList[existingIndex] = newEntry;
+        } else {
+          nextList.push(newEntry);
+        }
+      });
+
+      const deduplicated = deduplicateContactsList(nextList, currentUser?.id);
+      try {
+        localStorage.setItem(getContactsStorageKey(currentUser?.id), JSON.stringify(deduplicated));
+        localStorage.setItem('my_saved_contacts', JSON.stringify(deduplicated));
+      } catch {}
+      return deduplicated;
+    });
+
+    setActiveTab('contacts');
+  }, [currentUser?.id, globalProfiles, setMySavedContacts, setActiveTab]);
 
   const handleSaveContact = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1133,10 +1263,12 @@ export default function ChatHub() {
       if (!baseUser && normalizedSearch) {
         baseUser = globalProfiles.find((p: UserProfile) => {
           const pUser = p.username?.trim().toLowerCase();
+          const pHandle = globalPageConfigsRef.current[String(p.id)]?.handle?.replace(/^@/, '').toLowerCase();
           const pEmail = p.email?.replace(/\s+/g, '').toLowerCase();
           return (
             pUser === normalizedSearch ||
             pUser === searchWithoutAt ||
+            pHandle === searchWithoutAt ||
             (pEmail && pEmail === normalizedSearch)
           );
         });
@@ -1188,18 +1320,21 @@ export default function ChatHub() {
         return;
       }
 
+      // Garante que o username técnico/público da Página Global NUNCA é sobrescrito pelo nome personalizado
+      const originalGlobalProfile = resolvedUserId
+        ? globalProfiles.find((p: UserProfile) => String(p.id) === resolvedUserId)
+        : null;
+
       const resolvedUsername = String(
-        baseUser?.username ||
-        baseUser?.profile?.username ||
-        baseUser?.display_name ||
-        baseUser?.profile?.displayName ||
+        (!isInvalidTextValue(originalGlobalProfile?.username) ? originalGlobalProfile?.username : null) ||
+        (!isInvalidTextValue(baseUser?.username) ? baseUser?.username : null) ||
+        (!isInvalidTextValue(baseUser?.profile?.username) ? baseUser?.profile?.username : null) ||
         (!isEmailAttempt && searchWithoutAt ? searchWithoutAt : '') ||
-        contactForm.customName.trim() ||
-        'Desconhecido'
+        generateCleanHandle(contactForm.customName, inputEmailKey)
       );
 
       const resolvedEmail =
-        normalizeEmailKey(baseUser?.email || baseUser?.profile?.email) ||
+        normalizeEmailKey(originalGlobalProfile?.email || baseUser?.email || baseUser?.profile?.email) ||
         inputEmailKey ||
         undefined;
 
@@ -1235,14 +1370,6 @@ export default function ChatHub() {
         ) {
           return true;
         }
-        if (
-          isRealUser &&
-          !existingId.startsWith('offline-') &&
-          existingUsername &&
-          existingUsername === resolvedUsername.toLowerCase()
-        ) {
-          return true;
-        }
         return false;
       });
 
@@ -1250,7 +1377,7 @@ export default function ChatHub() {
         const wasOffline = String(duplicateContact.id).startsWith('offline-');
         if (!wasOffline || !isRealUser) {
           alert(
-            `Este contacto (${duplicateContact.savedName || duplicateContact.username}) já está cadastrado na sua lista com este número, e-mail ou utilizador!`
+            `Este contacto (${duplicateContact.savedName || duplicateContact.username}) já está cadastrado na sua lista!`
           );
           return;
         }
@@ -1262,19 +1389,24 @@ export default function ChatHub() {
 
       const newContact: SavedContact = {
         id: finalContactId,
+        // Preserva o username original da Página Global
         username: resolvedUsername,
         email: resolvedEmail || normalizeEmailKey(duplicateContact?.email) || undefined,
         avatar_url:
+          originalGlobalProfile?.avatar_url ??
           baseUser?.avatar_url ??
           baseUser?.profile?.avatarUrl ??
           duplicateContact?.avatar_url ??
           null,
-        status: extractCleanPresenceStatus(baseUser?.status || (isRealUser ? 'Online' : 'Offline')),
+        status: extractCleanPresenceStatus(
+          originalGlobalProfile?.status || baseUser?.status || (isRealUser ? 'Online' : 'Offline')
+        ),
+        // O nome personalizado fica estritamente em savedName (Aba Contactos)
         savedName:
           contactForm.customName.trim() ||
           duplicateContact?.savedName ||
           resolvedUsername ||
-          'Desconhecido',
+          'Contacto',
         address: contactForm.address.trim() || duplicateContact?.address || '',
         phone: inputPhoneKey ? rawPhone : (normalizePhoneKey(duplicateContact?.phone) ? duplicateContact!.phone : ''),
         addedAt: new Date().toISOString()
@@ -1478,7 +1610,6 @@ export default function ChatHub() {
       const discoveredPages: Record<string, GlobalPageConfig> = { ...globalPageConfigsRef.current };
       let pagesChanged = false;
 
-      // 1. Lê da tabela pública profiles (acessível por todas as contas em tempo real)
       const { data: latestProfiles } = await supabase
         .from('profiles')
         .select('id, username, avatar_url, status');
@@ -1501,7 +1632,6 @@ export default function ChatHub() {
         }
       }
 
-      // 2. Lê os sinais mais recentes de private_messages onde o utilizador atual participa
       const { data: signalRows } = await supabase
         .from('private_messages')
         .select('id, sender_id, receiver_id, image_metadata, created_at')
@@ -1516,7 +1646,6 @@ export default function ChatHub() {
       const incomingAccessRequests: Array<{ targetPageId: string; req: GlobalPageAccessRequest }> = [];
 
       if (signalRows && signalRows.length > 0) {
-        // Percorre do mais antigo ao mais recente dentro do lote para respeitar a última ação
         const chronologicalRows = [...signalRows].reverse();
 
         for (const row of chronologicalRows) {
@@ -1527,7 +1656,6 @@ export default function ChatHub() {
             const cfg = meta.page_config as GlobalPageConfig;
             const uid = String(cfg.userId);
             const prevCfg = discoveredPages[uid];
-            // Atualiza se for mais recente ou ainda não existir
             if (
               !prevCfg ||
               !prevCfg.updated_at ||
@@ -1536,6 +1664,8 @@ export default function ChatHub() {
               const mergedCfg: GlobalPageConfig = {
                 ...prevCfg,
                 ...cfg,
+                title: isInvalidTextValue(cfg.title) ? (prevCfg?.title || 'Página Global') : cfg.title,
+                handle: isInvalidTextValue(cfg.handle) ? (prevCfg?.handle || '@pagina') : cfg.handle,
                 avatar_url: cfg.avatar_url || prevCfg?.avatar_url || null
               };
               if (JSON.stringify(prevCfg) !== JSON.stringify(mergedCfg)) {
@@ -1579,11 +1709,11 @@ export default function ChatHub() {
       for (const item of incomingAccessRequests) {
         const page: GlobalPageConfig = discoveredPages[item.targetPageId] || {
           userId: item.targetPageId,
-          title: currentUser.username || 'Minha Página',
+          title: getDisplayNameByTab(currentUser, 'global'),
           description: '',
           avatar_url: myAvatarUrl || currentUser.avatar_url || null,
           visibility: 'private',
-          handle: formatPageHandle(currentUser.username || 'pagina'),
+          handle: getPublicHandle(currentUser),
           hashtags: '',
           bio_link: '',
           is_adult: false,
@@ -1839,11 +1969,11 @@ export default function ChatHub() {
             setGlobalPageConfigs((prev: Record<string, GlobalPageConfig>) => {
               const page: GlobalPageConfig = prev[targetPageId] || {
                 userId: targetPageId,
-                title: currentUser.username || 'Minha Página',
+                title: getDisplayNameByTab(currentUser, 'global'),
                 description: '',
                 avatar_url: myAvatarUrl || currentUser.avatar_url || null,
                 visibility: 'private',
-                handle: formatPageHandle(currentUser.username || 'pagina'),
+                handle: getPublicHandle(currentUser),
                 hashtags: '',
                 bio_link: '',
                 is_adult: false,
@@ -2474,7 +2604,6 @@ export default function ChatHub() {
 
     const finalMsg: ChatMessage = data[0];
 
-    // Se for uma Postagem Global, distribui cópias de leitura para que outras contas vejam no mural da Página Global
     if (isGlobalPost && !isGroup) {
       try {
         const ownerPageCfg = globalPageConfigsRef.current[targetIdStr];
@@ -2672,13 +2801,11 @@ export default function ChatHub() {
         myId && (pageConfig?.approvedUserIds || []).map(String).includes(myId)
       );
 
-      // 1. Quando a página for Privada: abre a popup de solicitação até ser Aceito pelo dono
       if (pageConfig?.visibility === 'private' && !isMyOwnPage && !isApprovedVisitor) {
         setPendingPrivatePageTarget(contact);
         return;
       }
 
-      // 2. Quando a página for +18: abre a popup de confirmação de idade
       if (pageConfig?.is_adult && !isMyOwnPage && !verifiedAdultPageIds.includes(contactId)) {
         setPendingAdultTarget(contact);
         return;
@@ -2836,20 +2963,38 @@ export default function ChatHub() {
     );
   }, [mySavedContacts, deletedContactIds, blockedByUserIds]);
 
+  // REGRA DE ARQUITETURA: Na aba Global, busca SEMPRE os dados públicos originais da Página Global,
+  // ignorando qualquer savedName privado da lista de contactos.
   const activeGlobalPageConfig: GlobalPageConfig | null = useMemo(() => {
     if (activeTab !== 'global' || !selectedContact?.id) return null;
     const cid = String(selectedContact.id);
+    const rawGlobalProfile =
+      globalProfiles.find((p: UserProfile) => String(p.id) === cid) ||
+      (currentUser?.id && String(currentUser.id) === cid ? currentUser : selectedContact);
+
     const existing =
       globalPageConfigs[cid] ||
-      decodeGlobalPageFromProfileRow(selectedContact);
-    if (existing) return existing;
+      decodeGlobalPageFromProfileRow(rawGlobalProfile);
+
+    if (existing) {
+      return {
+        ...existing,
+        title: !isInvalidTextValue(existing.title)
+          ? existing.title
+          : getDisplayNameByTab(rawGlobalProfile, 'global'),
+        handle: !isInvalidTextValue(existing.handle)
+          ? existing.handle
+          : getPublicHandle(rawGlobalProfile)
+      };
+    }
+
     return {
       userId: cid,
-      title: selectedContact.username || 'Página Global',
+      title: getDisplayNameByTab(rawGlobalProfile, 'global'),
       description: '',
-      avatar_url: selectedContact.avatar_url || null,
+      avatar_url: rawGlobalProfile?.avatar_url || selectedContact.avatar_url || null,
       visibility: 'public',
-      handle: formatPageHandle(selectedContact.username || 'pagina'),
+      handle: getPublicHandle(rawGlobalProfile),
       hashtags: '',
       bio_link: '',
       is_adult: false,
@@ -2858,15 +3003,20 @@ export default function ChatHub() {
       rejectedUserIds: [],
       updated_at: ''
     };
-  }, [activeTab, selectedContact, globalPageConfigs]);
+  }, [activeTab, selectedContact, globalPageConfigs, globalProfiles, currentUser]);
 
   const myOwnGlobalPageConfig: GlobalPageConfig | null = useMemo(() => {
     if (!currentUser?.id) return null;
-    return (
+    const rawCfg =
       globalPageConfigs[String(currentUser.id)] ||
       decodeGlobalPageFromProfileRow(currentUser) ||
-      null
-    );
+      null;
+    if (!rawCfg) return null;
+    return {
+      ...rawCfg,
+      title: !isInvalidTextValue(rawCfg.title) ? rawCfg.title : getDisplayNameByTab(currentUser, 'global'),
+      handle: !isInvalidTextValue(rawCfg.handle) ? rawCfg.handle : getPublicHandle(currentUser)
+    };
   }, [currentUser, globalPageConfigs]);
 
   const myPendingAccessRequests: GlobalPageAccessRequest[] = useMemo(() => {
@@ -2930,7 +3080,22 @@ export default function ChatHub() {
         .animate-shake { animation: shake 0.6s cubic-bezier(.36,.07,.19,.97) both; }
       `}} />
 
-      {/* MODAIS ISOLADOS (PARTE 3) */}
+      {/* MODAL DEDICADO DE NOVO CONTACTO COM AGENDA DO TELEMÓVEL (PARTE 4) */}
+      <AddContactModal
+        isOpen={showAddContactModal && addModalTab === 'contact'}
+        targetUserToAdd={targetUserToAdd}
+        contactForm={contactForm}
+        setContactForm={setContactForm}
+        onSearchUser={handleSearchUser}
+        onSaveContact={handleSaveContact}
+        onImportMultipleFromPhone={handleImportMultipleFromPhone}
+        onClose={() => {
+          setShowAddContactModal(false);
+          setTargetUserToAdd(null);
+        }}
+      />
+
+      {/* MODAIS ISOLADOS (EDITOR DE PÁGINA GLOBAL, +18, PÁGINA PRIVADA, GALERIA) */}
       <ChatModals
         currentUser={currentUser}
         globalPageConfigs={globalPageConfigs}
@@ -2947,7 +3112,7 @@ export default function ChatHub() {
         downloadProgressMap={downloadProgressMap}
         handleManualDownload={handleManualDownload}
         onDeleteGalleryItem={handleDeleteGalleryItem}
-        showAddContactModal={showAddContactModal}
+        showAddContactModal={showAddContactModal && addModalTab === 'global_profile'}
         setShowAddContactModal={setShowAddContactModal}
         addModalTab={addModalTab}
         setAddModalTab={setAddModalTab}
@@ -2980,7 +3145,7 @@ export default function ChatHub() {
             localStream={localStream}
             remoteStream={remoteStream}
             isVideoCall={isVideoCall}
-            remoteName={incomingCall?.callerName || selectedContact?.username || 'Desconhecido'}
+            remoteName={incomingCall?.callerName || getDisplayNameByTab(selectedContact, activeTab)}
             onEndCall={endCall}
             {...({
               isSpeakerphoneOn,
@@ -3168,14 +3333,13 @@ export default function ChatHub() {
                   className="relative rounded-full ring-2 ring-emerald-500/40 hover:ring-emerald-500 transition active:scale-95 shrink-0 disabled:opacity-50"
                 >
                   <Avatar
-                    name={currentUser?.username || 'Eu'}
+                    name={getDisplayNameByTab(currentUser, 'global')}
                     customEmoji={myAvatarUrl || currentUser?.avatar_url}
                     size="w-8 h-8"
                     fontSize="text-xs"
                   />
                 </button>
                 
-                {/* BOTÃO DE SAÍDA (LOGOUT) ADICIONADO AQUI */}
                 <LogoutButton />
                 
               </div>
@@ -3212,7 +3376,7 @@ export default function ChatHub() {
             >
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
             </button>
-            <button onClick={handleOpenGenericAddContact} title="Adicionar Contacto ou Perfil Global" className="p-2.5 rounded-xl transition text-slate-500 hover:bg-slate-50 hover:text-emerald-500 flex items-center justify-center">
+            <button onClick={handleOpenGenericAddContact} title="Adicionar Contacto" className="p-2.5 rounded-xl transition text-slate-500 hover:bg-slate-50 hover:text-emerald-500 flex items-center justify-center">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
             </button>
             <button onClick={() => { setActiveTab('groups'); setSelectedContact(null); setSelectedGalleryItem(null); }} title="Grupos" className={`p-2.5 rounded-xl transition flex items-center justify-center ${activeTab === 'groups' ? 'bg-emerald-50 text-emerald-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>
@@ -3240,13 +3404,13 @@ export default function ChatHub() {
                   </button>
                 </div>
 
-                {/* CARTÃO FIXO DA MINHA PRÓPRIA PÁGINA GLOBAL */}
+                {/* CARTÃO FIXO DA MINHA PRÓPRIA PÁGINA GLOBAL (SEM @undefined) */}
                 {currentUser && (
                   <div
                     onClick={() =>
                       handleSelectUserToChat({
                         id: currentUser.id,
-                        username: myOwnGlobalPageConfig?.title || currentUser.username,
+                        username: myOwnGlobalPageConfig?.title || getDisplayNameByTab(currentUser, 'global'),
                         avatar_url: myOwnGlobalPageConfig?.avatar_url || myAvatarUrl || currentUser.avatar_url,
                         status: currentUser.status
                       })
@@ -3254,19 +3418,19 @@ export default function ChatHub() {
                     className="w-full flex items-start justify-start gap-3.5 p-3 px-4 bg-emerald-50/50 hover:bg-emerald-50 border-b border-emerald-100 cursor-pointer transition-all"
                   >
                     <Avatar
-                      name={myOwnGlobalPageConfig?.title || currentUser.username}
+                      name={myOwnGlobalPageConfig?.title || getDisplayNameByTab(currentUser, 'global')}
                       customEmoji={myOwnGlobalPageConfig?.avatar_url || myAvatarUrl || currentUser.avatar_url}
                     />
                     <div className="flex flex-col items-start flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 w-full flex-wrap">
                         <span className="text-[15px] font-extrabold text-emerald-950 truncate">
-                          {myOwnGlobalPageConfig?.title || currentUser.username}
+                          {myOwnGlobalPageConfig?.title || getDisplayNameByTab(currentUser, 'global')}
                         </span>
                         <span className="text-[10px] font-bold bg-emerald-500 text-white px-1.5 py-0.5 rounded">
                           Minha Página Global
                         </span>
                         <span className="text-[11px] text-slate-500 font-medium truncate">
-                          {myOwnGlobalPageConfig?.handle || `@${currentUser.username}`}
+                          {myOwnGlobalPageConfig?.handle || getPublicHandle(currentUser)}
                         </span>
                         {myOwnGlobalPageConfig?.visibility === 'private' ? (
                           <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">
@@ -3307,7 +3471,7 @@ export default function ChatHub() {
                   </div>
                 )}
 
-                {/* PAINEL DE SOLICITAÇÕES DA MINHA PÁGINA PRIVADA (ACEITO / NÃO ACEITO) */}
+                {/* PAINEL DE SOLICITAÇÕES DA MINHA PÁGINA PRIVADA */}
                 {myPendingAccessRequests.length > 0 && (
                   <div className="mx-3 my-2 p-3 rounded-xl bg-amber-50 border border-amber-200 flex flex-col gap-2">
                     <span className="text-xs font-extrabold text-amber-800">
@@ -3345,9 +3509,13 @@ export default function ChatHub() {
                   const pageCfg =
                     globalPageConfigs[pid] ||
                     decodeGlobalPageFromProfileRow(profile);
-                  const displayTitle = pageCfg?.title || profile.username;
+                  const displayTitle =
+                    (!isInvalidTextValue(pageCfg?.title) ? pageCfg?.title : null) ||
+                    getDisplayNameByTab(profile, 'global');
                   const displayAvatar = pageCfg?.avatar_url || profile.avatar_url;
-                  const displayHandle = pageCfg?.handle || `@${profile.username}`;
+                  const displayHandle =
+                    (!isInvalidTextValue(pageCfg?.handle) ? pageCfg?.handle : null) ||
+                    getPublicHandle(profile);
                   const isPrivatePage = pageCfg?.visibility === 'private';
                   const isAdultPage = Boolean(pageCfg?.is_adult);
                   const myId = currentUser?.id ? String(currentUser.id) : '';
@@ -3439,6 +3607,8 @@ export default function ChatHub() {
                         ? '#eab308'
                         : '#10b981';
 
+                    const contactPrivateDisplayName = getDisplayNameByTab(contact, 'contacts');
+
                     return (
                       <div
                         key={contact.id}
@@ -3447,14 +3617,14 @@ export default function ChatHub() {
                       >
                         <div className="flex items-center gap-4 flex-1 min-w-0">
                           <div className="relative shrink-0">
-                            <Avatar name={contact.savedName} customEmoji={contact.avatar_url} />
+                            <Avatar name={contactPrivateDisplayName} customEmoji={contact.avatar_url} />
                             {statusInfo.text === 'Online' && faceState !== 'blocked' && (
                               <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white bg-emerald-500 z-20"></span>
                             )}
                           </div>
                           <div className="flex flex-col items-start flex-1 min-w-0">
                             <span className="text-[16px] font-bold text-slate-900 truncate w-full text-left">
-                              {contact.savedName}
+                              {contactPrivateDisplayName}
                             </span>
                             <span className="text-[13px] text-slate-500 truncate w-full text-left">
                               {faceState === 'blocked' ? (
@@ -3723,9 +3893,9 @@ export default function ChatHub() {
                       <Avatar
                         name={
                           activeTab === 'global'
-                            ? activeGlobalPageConfig?.title || selectedContact?.username
+                            ? activeGlobalPageConfig?.title || getDisplayNameByTab(selectedContact, 'global')
                             : activeTab === 'contacts'
-                            ? selectedContact?.savedName || selectedContact?.username
+                            ? getDisplayNameByTab(selectedContact, 'contacts')
                             : selectedGroup?.name
                         }
                         customEmoji={
@@ -3740,15 +3910,15 @@ export default function ChatHub() {
                       <div className="flex flex-col ml-3 flex-1 min-w-0">
                         <h3 className="font-bold text-slate-900 text-[16px] truncate">
                           {activeTab === 'global'
-                            ? activeGlobalPageConfig?.title || selectedContact?.username
+                            ? activeGlobalPageConfig?.title || getDisplayNameByTab(selectedContact, 'global')
                             : activeTab === 'contacts'
-                            ? selectedContact?.savedName || selectedContact?.username
+                            ? getDisplayNameByTab(selectedContact, 'contacts')
                             : selectedGroup?.name}
                         </h3>
                         {(activeTab === 'contacts' || activeTab === 'global') && selectedContact && (
                           <span className="text-[12px] text-slate-500 truncate">
                             {activeTab === 'global'
-                              ? `${activeGlobalPageConfig?.handle || '@' + selectedContact.username} • ${
+                              ? `${activeGlobalPageConfig?.handle || getPublicHandle(selectedContact)} • ${
                                   activeGlobalPageConfig?.visibility === 'private' ? '🔒 Página Privada' : '🌍 Página Pública'
                                 }`
                               : 'Chat Direto'}
@@ -3827,7 +3997,7 @@ export default function ChatHub() {
                 )}
               </header>
 
-              {/* CARTÃO COMPLETO DO PERFIL GLOBAL ABAIXO DO CABEÇALHO (NOME, @ DA PÁGINA, DESCRIÇÃO, # DA PÁGINA, LINK DA BIO E SOLICITAÇÕES) — VISÍVEL APENAS NA ABA GLOBAL */}
+              {/* CARTÃO COMPLETO DO PERFIL GLOBAL ABAIXO DO CABEÇALHO — VISÍVEL APENAS NA ABA GLOBAL */}
               {activeTab === 'global' && activeGlobalPageConfig && (
                 <div className="bg-white/95 backdrop-blur-sm border-b border-slate-200 px-4 py-3 z-20 flex flex-col gap-2 shrink-0">
                   <div className="flex items-start justify-between gap-3">
@@ -3869,7 +4039,6 @@ export default function ChatHub() {
                     </div>
                   </div>
 
-                  {/* ABAIXO DO NOME: @ DA PÁGINA, # DA PÁGINA E LINK DA BIO (EXCLUSIVOS DA PÁGINA GLOBAL) */}
                   <div className="flex flex-wrap items-center gap-3 pt-0.5">
                     <span className="text-xs font-semibold text-slate-500">
                       {activeGlobalPageConfig.handle}

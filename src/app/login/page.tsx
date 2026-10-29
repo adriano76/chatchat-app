@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { generateCleanHandle } from '@/utils/profileUtils';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -15,9 +16,52 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  
-  // Estado para detetar o ambiente
   const [isMobileApp, setIsMobileApp] = useState(false);
+
+  // --- GARANTE QUE O @ARROBA VEM PUXADO DO GOOGLE AUTOMATICAMENTE ---
+  async function ensureGoogleProfileHandle() {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const googleName = user.user_metadata?.full_name || user.user_metadata?.name || '';
+      const autoHandle = generateCleanHandle(googleName, user.email);
+
+      // 1. Se o metadata do utilizador ainda não tiver username válido, grava o que veio do Google
+      if (!user.user_metadata?.username || user.user_metadata?.username === 'undefined') {
+        await supabase.auth.updateUser({
+          data: {
+            username: autoHandle,
+            full_name: googleName || autoHandle,
+          }
+        });
+      }
+
+      // 2. Verifica na tabela pública 'profiles' se o @ (username) está vazio ou 'undefined'
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (!existingProfile) {
+        await supabase.from('profiles').insert([{
+          id: user.id,
+          username: autoHandle,
+          email: user.email,
+          avatar_url: user.user_metadata?.avatar_url || null,
+          status: 'Online'
+        }]);
+      } else if (!existingProfile.username || existingProfile.username === 'undefined') {
+        await supabase
+          .from('profiles')
+          .update({ username: autoHandle })
+          .eq('id', user.id);
+      }
+    } catch (err) {
+      // Continua o login normalmente mesmo se a tabela tiver restrições diferentes
+    }
+  }
 
   // --- FUNÇÃO: RECUPERAR SENHA ---
   async function handleResetPassword() {
@@ -47,7 +91,15 @@ export default function AuthPage() {
         setIsMobileApp(true);
       }
 
-      // PONTE NATIVA CORRIGIDA: Grava a sessão de verdade no Supabase antes de redirecionar
+      // Se retornou do OAuth na versão Web (navegador), garante também o @arroba automático
+      if (window.location.hash.includes('access_token=') || window.location.search.includes('code=')) {
+        ensureGoogleProfileHandle().then(() => {
+          router.push('/');
+          router.refresh();
+        });
+      }
+
+      // PONTE NATIVA APK: Grava a sessão e o @arroba do Google antes de abrir a página principal
       import('@capacitor/app').then(({ App }) => {
         App.removeAllListeners().then(() => {
           App.addListener('appUrlOpen', async (event) => {
@@ -55,7 +107,6 @@ export default function AuthPage() {
               try {
                 setMessage({ type: 'success', text: 'A validar credenciais do Google...' });
 
-                // CASO 1: O Google/Supabase devolveu #access_token=... e &refresh_token=...
                 if (event.url.includes('#access_token=')) {
                   const hashPart = event.url.substring(event.url.indexOf('#') + 1);
                   const params = new URLSearchParams(hashPart);
@@ -69,9 +120,7 @@ export default function AuthPage() {
                     });
                     if (error) throw error;
                   }
-                } 
-                // CASO 2: O Google/Supabase devolveu ?code=... (Fluxo PKCE)
-                else if (event.url.includes('?code=')) {
+                } else if (event.url.includes('?code=')) {
                   const queryPart = event.url.substring(event.url.indexOf('?'));
                   const params = new URLSearchParams(queryPart);
                   const code = params.get('code');
@@ -82,18 +131,19 @@ export default function AuthPage() {
                   }
                 }
 
-                // Confirma se a sessão ficou mesmo gravada no telemóvel
                 const { data: { session } } = await supabase.auth.getSession();
                 if (!session) {
-                  throw new Error('A sessão não pôde ser gravada. Verifique se chatchat://login-callback está nas Redirect URLs do Supabase.');
+                  throw new Error('A sessão não pôde ser gravada.');
                 }
+
+                // Puxa e grava o @arroba do Google antes de entrar
+                await ensureGoogleProfileHandle();
 
                 setMessage({ type: 'success', text: 'Sessão autorizada! A entrar no ChatChat...' });
 
-                // Força o carregamento limpo para a página principal com o utilizador logado
                 setTimeout(() => {
                   window.location.href = '/';
-                }, 500);
+                }, 400);
 
               } catch (err: any) {
                 setMessage({ type: 'error', text: 'Erro ao concluir login: ' + (err.message || 'Tente novamente.') });
@@ -101,13 +151,10 @@ export default function AuthPage() {
             }
           });
         });
-      }).catch(() => {
-        // Ignora na Web
-      });
+      }).catch(() => {});
     }
   }, [router]);
 
-  // Decide qual URL enviar para o Supabase
   const getRedirectUrl = () => {
     if (typeof window !== 'undefined') {
       const cap = (window as any).Capacitor;
@@ -120,7 +167,6 @@ export default function AuthPage() {
     return 'https://chatchat-app-tau.vercel.app/';
   };
 
-  // --- FUNÇÃO: LOGIN COM GOOGLE (Com tela "Continuar" forçada) ---
   async function handleGoogleLogin() {
     setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
@@ -128,7 +174,7 @@ export default function AuthPage() {
       options: {
         redirectTo: getRedirectUrl(),
         queryParams: {
-          prompt: 'consent', // Obriga a mostrar a tela com o botão "Continuar"
+          prompt: 'consent',
         },
       }
     });
@@ -138,7 +184,6 @@ export default function AuthPage() {
     }
   }
 
-  // --- FUNÇÃO: LOGIN COM FACEBOOK ---
   async function handleFacebookLogin() {
     setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
@@ -153,13 +198,13 @@ export default function AuthPage() {
     }
   }
 
-  // --- FUNÇÃO TRADICIONAL (EMAIL E SENHA) ---
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setMessage(null);
 
     const cleanEmail = email.trim().toLowerCase();
+    const cleanHandle = generateCleanHandle(username, cleanEmail);
 
     try {
       if (isSignUp) {
@@ -168,8 +213,8 @@ export default function AuthPage() {
           password,
           options: {
             data: {
-              username: username.trim().toLowerCase(),
-              full_name: username.trim(),
+              username: cleanHandle,
+              full_name: username.trim() || cleanHandle,
             },
           },
         });
@@ -182,6 +227,7 @@ export default function AuthPage() {
           password,
         });
         if (error) throw error;
+        await ensureGoogleProfileHandle();
         window.location.href = '/';
       }
     } catch (err: any) {
@@ -256,7 +302,7 @@ export default function AuthPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {isSignUp && (
             <div>
-              <label className="block text-xs font-medium text-neutral-300 mb-1">Nome de Usuário</label>
+              <label className="block text-xs font-medium text-neutral-300 mb-1">Nome de Usuário (@arroba)</label>
               <input
                 type="text"
                 required
