@@ -1086,7 +1086,6 @@ export default function ChatHub() {
 
   const handleOpenAddContact = useCallback((user: UserProfile) => {
     if (blockedByUserIdsRef.current.includes(String(user.id))) return;
-    // Busca sempre o perfil global original para preservar o username e o @ da Página Global
     const originalGlobal =
       globalProfiles.find((p: UserProfile) => String(p.id) === String(user.id)) || user;
     const pageCfg = globalPageConfigsRef.current[String(user.id)];
@@ -1174,7 +1173,6 @@ export default function ChatHub() {
 
         const newEntry: SavedContact = {
           id: contactId,
-          // Preserva o username técnico/global separado do savedName da agenda
           username: globalUsername,
           email: cleanEmail || matchedGlobal?.email || undefined,
           avatar_url: matchedGlobal?.avatar_url || null,
@@ -1320,7 +1318,6 @@ export default function ChatHub() {
         return;
       }
 
-      // Garante que o username técnico/público da Página Global NUNCA é sobrescrito pelo nome personalizado
       const originalGlobalProfile = resolvedUserId
         ? globalProfiles.find((p: UserProfile) => String(p.id) === resolvedUserId)
         : null;
@@ -1389,7 +1386,6 @@ export default function ChatHub() {
 
       const newContact: SavedContact = {
         id: finalContactId,
-        // Preserva o username original da Página Global
         username: resolvedUsername,
         email: resolvedEmail || normalizeEmailKey(duplicateContact?.email) || undefined,
         avatar_url:
@@ -1401,7 +1397,6 @@ export default function ChatHub() {
         status: extractCleanPresenceStatus(
           originalGlobalProfile?.status || baseUser?.status || (isRealUser ? 'Online' : 'Offline')
         ),
-        // O nome personalizado fica estritamente em savedName (Aba Contactos)
         savedName:
           contactForm.customName.trim() ||
           duplicateContact?.savedName ||
