@@ -19,14 +19,14 @@ export default function AuthPage() {
   // Estado para detetar o ambiente
   const [isMobileApp, setIsMobileApp] = useState(false);
 
-  // --- NOVA FUNÇÃO: RECUPERAR SENHA ---
+  // --- FUNÇÃO: RECUPERAR SENHA ---
   async function handleResetPassword() {
     if (!email) {
       setMessage({ type: 'error', text: 'Por favor, digite o seu e-mail no campo acima primeiro.' });
       return;
     }
     setLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
       redirectTo: 'chatchat://reset-callback',
     });
     
@@ -40,7 +40,6 @@ export default function AuthPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      // Deteção super agressiva do Capacitor no Android/iOS
       const cap = (window as any).Capacitor;
       const isNative = cap && (cap.isNativePlatform?.() || cap.isNative);
       
@@ -48,51 +47,72 @@ export default function AuthPage() {
         setIsMobileApp(true);
       }
 
-      // 2. Injeta a Ponte Nativa (Bridge) do Capacitor para agarrar o login
+      // PONTE NATIVA CORRIGIDA: Grava a sessão de verdade no Supabase antes de redirecionar
       import('@capacitor/app').then(({ App }) => {
-        App.addListener('appUrlOpen', async (event) => {
-          
-          if (event.url.includes('login-callback')) {
-            try {
-              // NOVO PADRÃO DE SEGURANÇA (PKCE)
-              if (event.url.includes('?code=')) {
-                const urlObj = new URL(event.url);
-                const code = urlObj.searchParams.get('code');
-                if (code) {
-                  const { error } = await supabase.auth.exchangeCodeForSession(code);
-                  if (error) throw error;
+        App.removeAllListeners().then(() => {
+          App.addListener('appUrlOpen', async (event) => {
+            if (event.url.includes('login-callback') || event.url.includes('access_token=') || event.url.includes('code=')) {
+              try {
+                setMessage({ type: 'success', text: 'A validar credenciais do Google...' });
+
+                // CASO 1: O Google/Supabase devolveu #access_token=... e &refresh_token=...
+                if (event.url.includes('#access_token=')) {
+                  const hashPart = event.url.substring(event.url.indexOf('#') + 1);
+                  const params = new URLSearchParams(hashPart);
+                  const access_token = params.get('access_token');
+                  const refresh_token = params.get('refresh_token');
+
+                  if (access_token && refresh_token) {
+                    const { error } = await supabase.auth.setSession({
+                      access_token,
+                      refresh_token,
+                    });
+                    if (error) throw error;
+                  }
+                } 
+                // CASO 2: O Google/Supabase devolveu ?code=... (Fluxo PKCE)
+                else if (event.url.includes('?code=')) {
+                  const queryPart = event.url.substring(event.url.indexOf('?'));
+                  const params = new URLSearchParams(queryPart);
+                  const code = params.get('code');
+
+                  if (code) {
+                    const { error } = await supabase.auth.exchangeCodeForSession(code);
+                    if (error) throw error;
+                  }
                 }
-              } 
-              // PADRÃO ANTIGO (Mantido como redundância)
-              else if (event.url.includes('#access_token=')) {
-                const hash = event.url.substring(event.url.indexOf('#'));
-                window.location.hash = hash; 
+
+                // Confirma se a sessão ficou mesmo gravada no telemóvel
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) {
+                  throw new Error('A sessão não pôde ser gravada. Verifique se chatchat://login-callback está nas Redirect URLs do Supabase.');
+                }
+
+                setMessage({ type: 'success', text: 'Sessão autorizada! A entrar no ChatChat...' });
+
+                // Força o carregamento limpo para a página principal com o utilizador logado
+                setTimeout(() => {
+                  window.location.href = '/';
+                }, 500);
+
+              } catch (err: any) {
+                setMessage({ type: 'error', text: 'Erro ao concluir login: ' + (err.message || 'Tente novamente.') });
               }
-              
-              setMessage({ type: 'success', text: 'Sessão autorizada! A iniciar ChatChat...' });
-              
-              setTimeout(() => {
-                router.push('/');
-                router.refresh();
-              }, 1000);
-            } catch (err: any) {
-              setMessage({ type: 'error', text: 'Falha no login: ' + err.message });
             }
-          }
+          });
         });
       }).catch(() => {
-        // Ignora erros na Web
+        // Ignora na Web
       });
     }
   }, [router]);
 
-  // Função blindada que decide qual URL enviar para o Supabase
+  // Decide qual URL enviar para o Supabase
   const getRedirectUrl = () => {
     if (typeof window !== 'undefined') {
       const cap = (window as any).Capacitor;
       const isNativeNow = cap && (cap.isNativePlatform?.() || cap.isNative);
       
-      // Se detetar nativamente OU a checkbox estiver marcada, força a abertura da App!
       if (isNativeNow || isMobileApp) {
         return 'chatchat://login-callback';
       }
@@ -100,13 +120,16 @@ export default function AuthPage() {
     return 'https://chatchat-app-tau.vercel.app/';
   };
 
-  // --- FUNÇÃO: LOGIN COM GOOGLE ---
+  // --- FUNÇÃO: LOGIN COM GOOGLE (Com tela "Continuar" forçada) ---
   async function handleGoogleLogin() {
     setMessage(null);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: getRedirectUrl(),
+        queryParams: {
+          prompt: 'consent', // Obriga a mostrar a tela com o botão "Continuar"
+        },
       }
     });
     
@@ -136,7 +159,6 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
-    // Limpa espaços invisíveis e forca minúsculas
     const cleanEmail = email.trim().toLowerCase();
 
     try {
@@ -160,8 +182,7 @@ export default function AuthPage() {
           password,
         });
         if (error) throw error;
-        router.push('/');
-        router.refresh();
+        window.location.href = '/';
       }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || 'Erro na autenticação.' });
@@ -314,7 +335,6 @@ export default function AuthPage() {
           )}
         </div>
 
-        {/* OVERRIDE MANUAL: Garante o redirecionamento nativo caso a deteção falhe */}
         <div className="mt-6 flex items-center justify-center gap-2 text-xs text-neutral-500 bg-neutral-950/40 py-2.5 rounded-lg border border-neutral-800">
           <input 
             type="checkbox" 
