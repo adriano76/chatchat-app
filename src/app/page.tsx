@@ -15,7 +15,7 @@ import {
   getDisplayNameByTab
 } from '@/utils/profileUtils';
 
-// Modal de Contactos com Agenda do Telemóvel (Parte 4)
+// Modal de Contactos com Agenda do Telemóvel e Edição Privada (Parte 4)
 import { AddContactModal } from '@/components/contacts/AddContactModal';
 
 // Hooks Nativos da Arquitetura ChatChat
@@ -188,10 +188,11 @@ export default function ChatHub() {
     addOrUpdateContact
   } = useContactsCleanRoom(currentUser?.id || null);
 
-  // Estados de Contactos e Carinha (Verde / Amarelo / Vermelho)
+  // Estados de Contactos, Edição Privada e Carinha (Verde / Amarelo / Vermelho)
   const [showAddContactModal, setShowAddContactModal] = useState<boolean>(false);
+  const [isEditingContact, setIsEditingContact] = useState<boolean>(false);
   const [addModalTab, setAddModalTab] = useState<'contact' | 'global_profile'>('contact');
-  const [targetUserToAdd, setTargetUserToAdd] = useState<UserProfile | null>(null);
+  const [targetUserToAdd, setTargetUserToAdd] = useState<any | null>(null);
   const [contactForm, setContactForm] = useState<ContactFormState>({
     search: '',
     customName: '',
@@ -435,7 +436,6 @@ export default function ChatHub() {
           .eq('id', myId)
           .maybeSingle();
 
-        // Se o username no banco ainda estiver vazio ou 'undefined', grava automaticamente o handle limpo
         if (data && isInvalidTextValue(data.username)) {
           await supabase
             .from('profiles')
@@ -478,24 +478,35 @@ export default function ChatHub() {
     fetchMyLatestAvatarAndSyncPage();
   }, [currentUser?.id, currentUser?.username, currentUser?.email, currentUser?.avatar_url]);
 
-  // Propaga novas fotos de perfil de globalProfiles para os contactos salvos
+  // Propaga novas fotos e mantém o username público atualizado nos contactos salvos sem tocar no savedName
   useEffect(() => {
     if (!globalProfiles || globalProfiles.length === 0 || !currentUser?.id) return;
-    const profileAvatarMap = new Map<string, string | null>();
+    const profileMap = new Map<string, UserProfile>();
     globalProfiles.forEach((p: UserProfile) => {
-      if (p?.id && p.avatar_url) {
-        profileAvatarMap.set(String(p.id), p.avatar_url);
+      if (p?.id) {
+        profileMap.set(String(p.id), p);
       }
     });
-    if (profileAvatarMap.size === 0) return;
+    if (profileMap.size === 0) return;
 
     setMySavedContacts((prev: SavedContact[]) => {
       let changed = false;
       const next = prev.map((c: SavedContact) => {
-        const latestAvatar = profileAvatarMap.get(String(c.id));
-        if (latestAvatar && latestAvatar !== c.avatar_url) {
+        const globalOrig = profileMap.get(String(c.id));
+        if (!globalOrig) return c;
+
+        const latestAvatar = globalOrig.avatar_url || c.avatar_url;
+        const latestGlobalUsername = !isInvalidTextValue(globalOrig.username)
+          ? globalOrig.username
+          : c.username;
+
+        if (latestAvatar !== c.avatar_url || latestGlobalUsername !== c.username) {
           changed = true;
-          return { ...c, avatar_url: latestAvatar };
+          return {
+            ...c,
+            avatar_url: latestAvatar,
+            username: latestGlobalUsername
+          };
         }
         return c;
       });
@@ -559,7 +570,6 @@ export default function ChatHub() {
         const globalOrig = globalProfiles.find((p: UserProfile) => String(p.id) === cid);
         const profileEmail = (item.profile as any)?.email || existing?.email || globalOrig?.email;
 
-        // Mantém sempre o username original da Rede Global separado do savedName privado
         const preservedGlobalUsername =
           (!isInvalidTextValue(globalOrig?.username) ? globalOrig?.username : null) ||
           (!isInvalidTextValue(item.profile?.username) ? item.profile.username : null) ||
@@ -572,7 +582,8 @@ export default function ChatHub() {
           email: profileEmail,
           avatar_url: item.profile.avatarUrl ?? existing?.avatar_url ?? globalOrig?.avatar_url ?? null,
           status: extractCleanPresenceStatus(existing?.status || globalOrig?.status || 'Online'),
-          savedName: resolveDisplayName(item) || existing?.savedName || preservedGlobalUsername,
+          // Se o utilizador já editou localmente o savedName, prioriza a edição local
+          savedName: existing?.savedName || resolveDisplayName(item) || preservedGlobalUsername,
           address: existing?.address || '',
           phone: existing?.phone || '',
           addedAt: item.updatedAt || existing?.addedAt || new Date().toISOString()
@@ -663,14 +674,16 @@ export default function ChatHub() {
   }, [currentUser, myAvatarUrl]);
 
   const handleOpenGlobalPageEditor = useCallback(() => {
+    setIsEditingContact(false);
     setTargetUserToAdd(null);
     populateGlobalPageFormForCurrentUser();
     setAddModalTab('global_profile');
     setShowAddContactModal(true);
   }, [populateGlobalPageFormForCurrentUser]);
 
-  // Publica a configuração da Página Global na tabela pública profiles (status codificado)
+  // Publica a configuração da Página Global APENAS para o próprio dono (myId === currentUser.id)
   const publishGlobalPageConfigToSupabase = useCallback(async (myId: string, configToPublish: GlobalPageConfig) => {
+    if (!currentUser?.id || String(currentUser.id) !== String(myId)) return;
     try {
       const encodedStatus = encodeStatusWithGlobalPage(currentUser?.status, configToPublish);
       await supabase
@@ -714,7 +727,7 @@ export default function ChatHub() {
         }
       ]);
     } catch {}
-  }, [currentUser?.status]);
+  }, [currentUser?.id, currentUser?.status]);
 
   const handleSaveGlobalPage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1084,29 +1097,56 @@ export default function ChatHub() {
     }
   }, [currentUser?.id, selectedContact, setMySavedContacts, setSelectedContact]);
 
+  // Abre modal para ADICIONAR um utilizador da Página Global aos Meus Contactos
   const handleOpenAddContact = useCallback((user: UserProfile) => {
     if (blockedByUserIdsRef.current.includes(String(user.id))) return;
+    const existingSaved = mySavedContacts.find((c: SavedContact) => String(c.id) === String(user.id));
     const originalGlobal =
       globalProfiles.find((p: UserProfile) => String(p.id) === String(user.id)) || user;
     const pageCfg = globalPageConfigsRef.current[String(user.id)];
-    const defaultCustomName =
-      pageCfg?.title || getDisplayNameByTab(originalGlobal, 'global');
+    const globalTitle =
+      (!isInvalidTextValue(pageCfg?.title) ? pageCfg?.title : null) ||
+      getDisplayNameByTab(originalGlobal, 'global');
 
+    setIsEditingContact(Boolean(existingSaved));
     setTargetUserToAdd({
       ...originalGlobal,
-      username: originalGlobal.username || defaultCustomName
+      username: originalGlobal.username || globalTitle
     });
     setAddModalTab('contact');
     setContactForm({
-      search: '',
-      customName: defaultCustomName,
-      address: '',
-      phone: ''
+      search: existingSaved?.email || originalGlobal.email || '',
+      customName: existingSaved?.savedName || globalTitle,
+      address: existingSaved?.address || '',
+      phone: existingSaved?.phone || ''
+    });
+    setShowAddContactModal(true);
+  }, [globalProfiles, mySavedContacts]);
+
+  // NOVO: Abre modal para EDITAR um contacto já existente na aba Meus Contactos (sem alterar a Página Global)
+  const handleOpenEditContact = useCallback((contact: SavedContact) => {
+    if (!contact) return;
+    setOpenContactMenuId(null);
+    const originalGlobal =
+      globalProfiles.find((p: UserProfile) => String(p.id) === String(contact.id)) || contact;
+
+    setIsEditingContact(true);
+    setTargetUserToAdd({
+      ...contact,
+      username: originalGlobal.username || contact.username
+    });
+    setAddModalTab('contact');
+    setContactForm({
+      search: contact.email || originalGlobal.email || contact.username || '',
+      customName: contact.savedName || contact.username || '',
+      address: contact.address || '',
+      phone: contact.phone || ''
     });
     setShowAddContactModal(true);
   }, [globalProfiles]);
 
   const handleOpenGenericAddContact = useCallback(() => {
+    setIsEditingContact(false);
     setTargetUserToAdd(null);
     setAddModalTab('contact');
     setContactForm({ search: '', customName: '', address: '', phone: '' });
@@ -1215,7 +1255,7 @@ export default function ChatHub() {
         return;
       }
 
-      if (rawSearch && isPhoneTypedInSearchBar(rawSearch)) {
+      if (!isEditingContact && rawSearch && isPhoneTypedInSearchBar(rawSearch)) {
         alert(
           'Erro: Inseriu um número de telefone na barra de "@Utilizador ou Email". Por favor, coloque o número apenas no campo "Telefone".'
         );
@@ -1239,7 +1279,7 @@ export default function ChatHub() {
 
       const isEmailAttempt = rawSearch.includes('@') && !rawSearch.startsWith('@');
       const inputEmailKey = normalizeEmailKey(rawSearch);
-      if (isEmailAttempt && !inputEmailKey) {
+      if (!isEditingContact && isEmailAttempt && !inputEmailKey) {
         alert('Erro: Digite um endereço de e-mail válido (ex: usuario@gmail.com).');
         return;
       }
@@ -1251,7 +1291,7 @@ export default function ChatHub() {
         ? normalizedSearch.slice(1).trim()
         : normalizedSearch.trim();
 
-      if (rawSearch && !isEmailAttempt && searchWithoutAt.length < 2) {
+      if (!isEditingContact && !targetUserToAdd && rawSearch && !isEmailAttempt && searchWithoutAt.length < 2) {
         alert('Erro: Digite um @Utilizador ou endereço de e-mail válido.');
         return;
       }
@@ -1318,6 +1358,7 @@ export default function ChatHub() {
         return;
       }
 
+      // Garante que o username público da Página Global é 100% preservado e NUNCA alterado pelo contacto
       const originalGlobalProfile = resolvedUserId
         ? globalProfiles.find((p: UserProfile) => String(p.id) === resolvedUserId)
         : null;
@@ -1352,7 +1393,7 @@ export default function ChatHub() {
           normalizeEmailKey(c.phone);
         const existingUsername = c.username?.trim().toLowerCase();
 
-        if (isRealUser && existingId === resolvedUserId) return true;
+        if (resolvedUserId && existingId === resolvedUserId) return true;
         if (inputPhoneKey.length >= 8 && existingPhoneKey.length >= 8 && existingPhoneKey === inputPhoneKey) {
           return true;
         }
@@ -1370,22 +1411,14 @@ export default function ChatHub() {
         return false;
       });
 
-      if (duplicateContact) {
-        const wasOffline = String(duplicateContact.id).startsWith('offline-');
-        if (!wasOffline || !isRealUser) {
-          alert(
-            `Este contacto (${duplicateContact.savedName || duplicateContact.username}) já está cadastrado na sua lista!`
-          );
-          return;
-        }
-      }
-
+      // Se já existir na lista, atualiza os dados privados (savedName, phone, address) em vez de bloquear!
       const finalContactId = isRealUser
         ? resolvedUserId!
-        : (duplicateContact?.id || `offline-${Date.now()}`);
+        : (duplicateContact?.id || resolvedUserId || `offline-${Date.now()}`);
 
       const newContact: SavedContact = {
         id: finalContactId,
+        // Mantém SEMPRE o username público intacto para não afetar a aba Global
         username: resolvedUsername,
         email: resolvedEmail || normalizeEmailKey(duplicateContact?.email) || undefined,
         avatar_url:
@@ -1397,14 +1430,15 @@ export default function ChatHub() {
         status: extractCleanPresenceStatus(
           originalGlobalProfile?.status || baseUser?.status || (isRealUser ? 'Online' : 'Offline')
         ),
+        // Nome personalizado exclusivo da aba Meus Contactos
         savedName:
           contactForm.customName.trim() ||
           duplicateContact?.savedName ||
           resolvedUsername ||
           'Contacto',
-        address: contactForm.address.trim() || duplicateContact?.address || '',
-        phone: inputPhoneKey ? rawPhone : (normalizePhoneKey(duplicateContact?.phone) ? duplicateContact!.phone : ''),
-        addedAt: new Date().toISOString()
+        address: contactForm.address.trim(),
+        phone: inputPhoneKey ? rawPhone : (isEditingContact ? '' : (duplicateContact?.phone || '')),
+        addedAt: duplicateContact?.addedAt || new Date().toISOString()
       };
 
       if (deletedContactIdsRef.current.includes(String(newContact.id))) {
@@ -1441,7 +1475,23 @@ export default function ChatHub() {
       localStorage.setItem(userStorageKey, JSON.stringify(updatedContacts));
       localStorage.setItem('my_saved_contacts', JSON.stringify(updatedContacts));
 
+      // Atualiza imediatamente o contacto selecionado na conversa se estiver aberto
+      if (selectedContact && String(selectedContact.id) === String(newContact.id)) {
+        setSelectedContact((prev: any) =>
+          prev
+            ? {
+                ...prev,
+                username: resolvedUsername,
+                savedName: newContact.savedName,
+                phone: newContact.phone,
+                address: newContact.address
+              }
+            : prev
+        );
+      }
+
       setShowAddContactModal(false);
+      setIsEditingContact(false);
       setTargetUserToAdd(null);
       setActiveTab('contacts');
     } finally {
@@ -3075,9 +3125,10 @@ export default function ChatHub() {
         .animate-shake { animation: shake 0.6s cubic-bezier(.36,.07,.19,.97) both; }
       `}} />
 
-      {/* MODAL DEDICADO DE NOVO CONTACTO COM AGENDA DO TELEMÓVEL (PARTE 4) */}
+      {/* MODAL DEDICADO DE NOVO CONTACTO E EDIÇÃO DE CONTACTO COM AGENDA DO TELEMÓVEL */}
       <AddContactModal
         isOpen={showAddContactModal && addModalTab === 'contact'}
+        isEditing={isEditingContact}
         targetUserToAdd={targetUserToAdd}
         contactForm={contactForm}
         setContactForm={setContactForm}
@@ -3086,11 +3137,12 @@ export default function ChatHub() {
         onImportMultipleFromPhone={handleImportMultipleFromPhone}
         onClose={() => {
           setShowAddContactModal(false);
+          setIsEditingContact(false);
           setTargetUserToAdd(null);
         }}
       />
 
-      {/* MODAIS ISOLADOS (EDITOR DE PÁGINA GLOBAL, +18, PÁGINA PRIVADA, GALERIA) */}
+      {/* MODAIS ISOLADOS (EDITOR DE PÁGINA GLOBAL DO PRÓPRIO UTILIZADOR, +18, PÁGINA PRIVADA, GALERIA) */}
       <ChatModals
         currentUser={currentUser}
         globalPageConfigs={globalPageConfigs}
@@ -3395,7 +3447,7 @@ export default function ChatHub() {
                     onClick={handleOpenGlobalPageEditor}
                     className="text-xs font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg transition shrink-0"
                   >
-                    ✏️ Alterar Nome / Página
+                    ✏️ Alterar Minha Página
                   </button>
                 </div>
 
@@ -3608,9 +3660,9 @@ export default function ChatHub() {
                       <div
                         key={contact.id}
                         onClick={() => handleSelectUserToChat(contact)}
-                        className="w-full flex items-center justify-between gap-3 p-3 px-4 transition-all hover:bg-slate-50 active:bg-slate-100 border-b border-slate-50 cursor-pointer relative"
+                        className="w-full flex items-center justify-between gap-2 p-3 px-4 transition-all hover:bg-slate-50 active:bg-slate-100 border-b border-slate-50 cursor-pointer relative"
                       >
-                        <div className="flex items-center gap-4 flex-1 min-w-0">
+                        <div className="flex items-center gap-3.5 flex-1 min-w-0">
                           <div className="relative shrink-0">
                             <Avatar name={contactPrivateDisplayName} customEmoji={contact.avatar_url} />
                             {statusInfo.text === 'Online' && faceState !== 'blocked' && (
@@ -3618,14 +3670,16 @@ export default function ChatHub() {
                             )}
                           </div>
                           <div className="flex flex-col items-start flex-1 min-w-0">
-                            <span className="text-[16px] font-bold text-slate-900 truncate w-full text-left">
+                            <span className="text-[15.5px] font-bold text-slate-900 truncate w-full text-left">
                               {contactPrivateDisplayName}
                             </span>
-                            <span className="text-[13px] text-slate-500 truncate w-full text-left">
+                            <span className="text-[12.5px] text-slate-500 truncate w-full text-left">
                               {faceState === 'blocked' ? (
                                 <span className="text-rose-600 font-semibold">Bloqueado</span>
                               ) : faceState === 'muted' ? (
                                 <span className="text-amber-600 font-semibold">Silenciado</span>
+                              ) : contact.phone ? (
+                                `📞 ${contact.phone}`
                               ) : statusInfo.text !== 'Online' && statusInfo.text !== 'Offline' ? (
                                 statusInfo.text
                               ) : (
@@ -3635,7 +3689,23 @@ export default function ChatHub() {
                           </div>
                         </div>
 
-                        <div className="relative shrink-0" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1 relative shrink-0" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                          {/* BOTÃO DIRETO DE EDITAR CONTACTO NA ABA MEUS CONTACTOS */}
+                          <button
+                            type="button"
+                            onClick={(e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              handleOpenEditContact(contact);
+                            }}
+                            title="Editar nome, telefone ou endereço deste contacto"
+                            className="p-2 rounded-full text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 active:scale-95 transition flex items-center justify-center"
+                          >
+                            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 20h9"></path>
+                              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                            </svg>
+                          </button>
+
                           <button
                             type="button"
                             onClick={(e: React.MouseEvent) => {
@@ -3655,8 +3725,17 @@ export default function ChatHub() {
                           {openContactMenuId === idStr && (
                             <div
                               onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                              className="absolute right-0 top-11 w-48 bg-white rounded-xl shadow-[0_8px_28px_rgba(0,0,0,0.18)] border border-slate-100 overflow-hidden z-[90] flex flex-col py-1 animate-popup"
+                              className="absolute right-0 top-11 w-52 bg-white rounded-xl shadow-[0_8px_28px_rgba(0,0,0,0.18)] border border-slate-100 overflow-hidden z-[90] flex flex-col py-1 animate-popup"
                             >
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditContact(contact)}
+                                className="px-3.5 py-2.5 text-left text-[13.5px] font-bold text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition border-b border-slate-100"
+                              >
+                                <span>✏️</span>
+                                <span>Editar contato</span>
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={() => handleToggleContactFaceStatus(idStr, 'muted')}
@@ -3916,15 +3995,28 @@ export default function ChatHub() {
                               ? `${activeGlobalPageConfig?.handle || getPublicHandle(selectedContact)} • ${
                                   activeGlobalPageConfig?.visibility === 'private' ? '🔒 Página Privada' : '🌍 Página Pública'
                                 }`
+                              : selectedContact.phone
+                              ? `Chat Direto • 📞 ${selectedContact.phone}`
                               : 'Chat Direto'}
                           </span>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 md:gap-3 text-slate-600 pr-2 shrink-0">
+                    <div className="flex items-center gap-1.5 md:gap-2.5 text-slate-600 pr-2 shrink-0">
                       {activeTab === 'contacts' && selectedContact && (
                         <>
+                          {/* BOTÃO EDITAR CONTACTO DIRETO NO CABEÇALHO DA CONVERSA */}
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditContact(selectedContact)}
+                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold transition flex items-center gap-1"
+                            title="Editar nome personalizado, telefone ou endereço deste contacto"
+                          >
+                            <span>✏️</span>
+                            <span className="hidden sm:inline">Editar Contato</span>
+                          </button>
+
                           <button
                             onClick={() => {
                               const cid = String(selectedContact.id);
@@ -3981,7 +4073,7 @@ export default function ChatHub() {
                             </span>
                           </div>
                           {(!currentUser?.id || String(selectedContact.id) !== String(currentUser.id)) && (
-                            <button onClick={() => handleOpenAddContact(selectedContact)} className="p-2 hover:bg-slate-200 rounded-full transition text-slate-500" title="Adicionar aos Contactos">
+                            <button onClick={() => handleOpenAddContact(selectedContact)} className="p-2 hover:bg-slate-200 rounded-full transition text-slate-500" title="Adicionar / Editar nos meus Contactos">
                               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
                             </button>
                           )}
