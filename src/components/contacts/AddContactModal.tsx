@@ -5,8 +5,9 @@ import React from 'react';
 import { usePhoneContacts } from '@/hooks/usePhoneContacts';
 import { getPublicHandle, getDisplayNameByTab } from '@/utils/profileUtils';
 
-interface AddContactModalProps {
+export interface AddContactModalProps {
   isOpen: boolean;
+  isEditing?: boolean;
   targetUserToAdd: any | null;
   contactForm: { search: string; customName: string; address: string; phone: string };
   setContactForm: React.Dispatch<React.SetStateAction<{ search: string; customName: string; address: string; phone: string }>>;
@@ -18,6 +19,7 @@ interface AddContactModalProps {
 
 export function AddContactModal({
   isOpen,
+  isEditing = false,
   targetUserToAdd,
   contactForm,
   setContactForm,
@@ -34,7 +36,7 @@ export function AddContactModal({
     const picked = await pickFromPhoneAddressBook();
     if (!picked || picked.length === 0) return;
 
-    if (picked.length === 1) {
+    if (picked.length === 1 || isEditing) {
       const first = picked[0];
       setContactForm((prev) => ({
         ...prev,
@@ -52,21 +54,34 @@ export function AddContactModal({
     <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-popup">
       <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl flex flex-col">
         {targetUserToAdd ? (
-          <div className="flex items-center gap-4 mb-4 border-b border-slate-100 pb-4">
-            <div className="w-14 h-14 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-xl shrink-0">
-              {getDisplayNameByTab(targetUserToAdd, 'global').charAt(0).toUpperCase()}
+          <div className="flex items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-12 h-12 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-lg shrink-0">
+                {getDisplayNameByTab(targetUserToAdd, 'global').charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-slate-900 leading-tight truncate">
+                  {isEditing ? '✏️ Editar Contacto' : getDisplayNameByTab(targetUserToAdd, 'global')}
+                </h3>
+                <span className="text-xs text-emerald-600 font-semibold block truncate">
+                  Perfil Global: {getPublicHandle(targetUserToAdd)}
+                </span>
+                <p className="text-[10.5px] text-slate-400 mt-0.5">
+                  Alterações guardadas apenas na aba Meus Contactos.
+                </p>
+              </div>
             </div>
-            <div className="min-w-0">
-              <h3 className="text-lg font-bold text-slate-900 leading-tight truncate">
-                {getDisplayNameByTab(targetUserToAdd, 'global')}
-              </h3>
-              <span className="text-sm text-emerald-600 font-semibold">
-                {getPublicHandle(targetUserToAdd)}
-              </span>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                O @ da Página Global permanecerá intacto.
-              </p>
-            </div>
+
+            <button
+              type="button"
+              onClick={handlePullFromPhone}
+              disabled={loadingPhoneContacts}
+              title="Puxar dados da agenda do telemóvel"
+              className="px-2.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] font-bold transition flex items-center gap-1 shrink-0"
+            >
+              <span>📱</span>
+              <span>{loadingPhoneContacts ? '...' : 'Agenda'}</span>
+            </button>
           </div>
         ) : (
           <div className="flex items-center justify-between gap-3 mb-4 border-b border-slate-100 pb-4">
@@ -93,7 +108,7 @@ export function AddContactModal({
         )}
 
         <form onSubmit={onSaveContact} className="flex flex-col gap-3">
-          {!targetUserToAdd && (
+          {!targetUserToAdd && !isEditing && (
             <div>
               <label className="text-xs font-bold text-slate-700 ml-1">Localizar (@arroba ou E-mail)</label>
               <input
@@ -108,7 +123,7 @@ export function AddContactModal({
 
           <div>
             <label className="text-xs font-bold text-slate-700 ml-1">
-              Nome Personalizado (Apenas nos seus Contactos)
+              Nome Personalizado (Apenas em Meus Contactos)
             </label>
             <input
               type="text"
@@ -154,7 +169,7 @@ export function AddContactModal({
               type="submit"
               className="flex-1 py-2.5 rounded-xl font-bold text-white bg-emerald-500 hover:bg-emerald-600 text-sm transition shadow-md shadow-emerald-500/30"
             >
-              Guardar Contacto
+              {isEditing ? 'Salvar Alterações' : 'Guardar Contacto'}
             </button>
           </div>
         </form>
